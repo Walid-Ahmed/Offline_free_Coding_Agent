@@ -146,6 +146,13 @@ Output limits accept 256–8,192 tokens; prompt budgets accept 8,000–64,000 by
 Small tasks with the defaults should require less prompt processing, but performance
 still depends on hardware, context, and Ollama. No fixed speed improvement is guaranteed.
 
+Progress lines show the actual action and target alongside the model's narration.
+An identical consecutive read/search/retrieve request is skipped and triggers one
+finish-only recovery call, within the action limit. If the model ignores recovery,
+the run stops with exit code 2. A step-limit exit also means the task is incomplete;
+intermediate tool narration is not a final answer. This guard catches repeated
+lookup requests, not every possible reasoning loop or incorrect answer.
+
 ## Search file contents
 
 ```sh

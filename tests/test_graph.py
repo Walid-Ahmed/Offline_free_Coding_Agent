@@ -59,11 +59,46 @@ class GraphTests(unittest.TestCase):
 
             def chat(self, messages, schema):
                 self.calls += 1
-                return action("read", "missing.py")
+                return action("read", f"missing{self.calls}.py")
 
         model = Model()
         self.assertEqual(run(model, self.ws, "Task", max_steps=30, output=lambda _: None), 2)
         self.assertEqual(model.calls, 30)
+
+    def test_repeated_lookup_skips_tool_and_requests_final_answer(self):
+        Path(self.temp.name, "code.py").write_text("value = 42\n")
+        calls = []
+
+        class Model:
+            def chat(self, messages, schema):
+                calls.append((messages, schema))
+                if len(calls) <= 2:
+                    return action("read", "code.py", f"unused {len(calls)}")
+                return action("finish", content="The value is 42.")
+
+        output = []
+        with patch.object(self.ws, "read", wraps=self.ws.read) as read:
+            result = run(Model(), self.ws, "Explain value", max_steps=4, output=output.append)
+        self.assertEqual(result, 0)
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(calls[-1][1]["properties"]["action"]["enum"], ["finish"])
+        self.assertTrue(any("read code.py:" in line for line in output))
+        self.assertIn("The value is 42.", output)
+
+    def test_model_ignoring_loop_recovery_stops_without_repeating_tools(self):
+        class Model:
+            calls = 0
+
+            def chat(self, messages, schema):
+                self.calls += 1
+                return action("search", content="FastAPI(")
+
+        model = Model()
+        with patch.object(self.ws, "search", return_value="No matches") as search:
+            result = run(model, self.ws, "Find entry points", max_steps=12, output=lambda _: None)
+        self.assertEqual(result, 2)
+        self.assertEqual(model.calls, 3)
+        search.assert_called_once()
 
     def test_finish_on_last_allowed_action_succeeds(self):
         class Model:

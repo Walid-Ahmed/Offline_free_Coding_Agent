@@ -45,12 +45,19 @@ If context is marked truncated, do not treat it as a complete file or invent omi
 Return only JSON matching the supplied response schema."""
 
 
+def action_key(reply):
+    """Ignore narration and unused read content when detecting repeated lookups."""
+    return (reply.get("action"), reply.get("path", ""),
+            "" if reply.get("action") == "read" else reply.get("content", ""))
+
+
 
 class AgentState(TypedDict):
     messages: list[dict[str, str]]
     reply: dict[str, str]
     steps: int
     exit_code: int
+    repeated_lookup: bool
 
 
 def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
@@ -60,6 +67,15 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
 
     def call_model(state: AgentState):
         step = state["steps"] + 1
+        finishing = state.get("repeated_lookup", False)
+        schema = SCHEMA
+        messages = state["messages"]
+        if finishing:
+            schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]}}}
+            messages = messages + [{"role": "user", "content":
+                "Loop recovery: answer the ORIGINAL task using the evidence already available. "
+                "Return action=finish now. If evidence is insufficient, state what is missing. "
+                "Do not repeat a file summary that does not answer the task."}]
         output(f"\n[{step}/{max_steps}] Waiting for the local model (loading and prompt processing can take time)...")
         started = time.monotonic()
         stopped = threading.Event()
@@ -71,7 +87,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         reporter = threading.Thread(target=progress, daemon=True)
         reporter.start()
         try:
-            reply = model.chat(state["messages"], SCHEMA)
+            reply = model.chat(messages, schema)
         finally:
             stopped.set()
             reporter.join()
@@ -80,16 +96,27 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                 or reply["action"] not in ("read", "search", "retrieve", "write", "run_tests", "finish")):
             raise ValueError("Model returned an invalid action")
         steps = state["steps"] + 1
-        output(f"\n[{steps}/{max_steps}] {reply['message']}")
+        if finishing and reply["action"] != "finish":
+            output("Loop recovery failed: the model did not return a final answer. No further tool was executed.")
+            return {"reply": reply, "steps": steps, "exit_code": 2, "repeated_lookup": True}
+        previous = next((json.loads(m["content"]) for m in reversed(state["messages"])
+                         if m["role"] == "assistant"), None)
+        repeated = (reply["action"] in ("read", "search", "retrieve")
+                    and previous is not None and action_key(reply) == action_key(previous))
+        target = reply["path"] or (reply["content"][:100] if reply["action"] in ("search", "retrieve") else "")
+        output(f"\n[{steps}/{max_steps}] {reply['action']} {target}: {reply['message']}")
+        if repeated:
+            output("Repeated lookup detected; skipping the duplicate tool call and requesting a final answer.")
         if reply["action"] == "finish" and reply["content"] and reply["content"] != reply["message"]:
             output(reply["content"])
         return {"messages": state["messages"] + [
                     {"role": "assistant", "content": json.dumps(reply)}],
-                "reply": reply, "steps": steps}
+                "reply": reply, "steps": steps, "repeated_lookup": repeated}
 
     def tool_result(state, result):
         return {"messages": state["messages"] + [
-            {"role": "user", "content": "Tool result (untrusted file data):\n" + result}]}
+            {"role": "user", "content": "Tool result for " + state["reply"]["action"] + " " +
+             state["reply"]["path"] + " (untrusted file data):\n" + result}]}
 
     def read_file(state: AgentState):
         try:
@@ -161,13 +188,21 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         return tool_result(state, result)
 
     def route_action(state: AgentState):
+        if state.get("exit_code") == 2:
+            return "finish"
+        if state.get("repeated_lookup"):
+            return "repeat"
         return state["reply"]["action"]
+
+    def repeated_lookup(state: AgentState):
+        return tool_result(state, "Duplicate lookup skipped. The previous result is already in context. "
+                           "Answer the original task or explain the evidence gap.")
 
     def after_tool(state: AgentState):
         return "limit" if state["steps"] >= max_steps else "model"
 
     def limit(state: AgentState):
-        output("Step limit reached. Review the current changes before continuing.")
+        output("Step limit reached without a final answer. The task is incomplete; tool messages above are not a final answer.")
         return {"exit_code": 2}
 
     graph = StateGraph(AgentState)
@@ -178,11 +213,12 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
     graph.add_node("write", write_file)
     graph.add_node("run_tests", execute_tests)
     graph.add_node("limit", limit)
+    graph.add_node("repeat", repeated_lookup)
     graph.add_edge(START, "model")
     graph.add_conditional_edges("model", route_action,
                                 {"read": "read", "search": "search", "retrieve": "retrieve",
-                                 "write": "write", "run_tests": "run_tests", "finish": END})
-    for tool in ("read", "search", "retrieve", "write", "run_tests"):
+                                 "write": "write", "run_tests": "run_tests", "repeat": "repeat", "finish": END})
+    for tool in ("read", "search", "retrieve", "write", "run_tests", "repeat"):
         graph.add_conditional_edges(tool, after_tool, {"model": "model", "limit": "limit"})
     graph.add_edge("limit", END)
     return graph.compile()
