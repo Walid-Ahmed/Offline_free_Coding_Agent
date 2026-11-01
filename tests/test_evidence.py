@@ -39,8 +39,24 @@ class EvidenceTests(unittest.TestCase):
                             dict(path='a/app/main.py', line=10, kind='service')]
         self.assertEqual(check_answer('The FastAPI entry point is [a/app/main.py:10].', duplicate_labels), [])
 
+    def test_urls_and_host_ports_are_not_citations(self):
+        evidence = [dict(path='app/main.py', line=3, kind='service', snippet='')]
+        answer = 'Service at app/main.py:3; Ollama listens on http://127.0.0.1:11434 or localhost:8000/docs.'
+        self.assertEqual(check_answer(answer, evidence), [])
+
+    def test_classification_matches_whole_paths_not_substrings(self):
+        evidence = [dict(path='app/main.py', line=3, kind='service', snippet=''),
+                    dict(path='tests/app/main.py', line=2, kind='test', snippet='')]
+        answer = 'Services:\n- app/main.py:3\nTests:\n- tests/app/main.py:2'
+        self.assertEqual(check_answer(answer, evidence, discovery=True), [])
+        swapped = 'Services:\n- tests/app/main.py:2\nTests:\n- app/main.py:3'
+        self.assertEqual(sum('Classification mismatch' in issue for issue in check_answer(swapped, evidence, discovery=True)), 2)
+
     def test_discovery_does_not_intercept_edits_or_unrelated_tasks(self):
         self.assertTrue(discovery_task('Find the FastAPI entry points. Do not modify files.'))
+        self.assertTrue(discovery_task("Find FastAPI entry points; don't modify anything"))
+        self.assertTrue(discovery_task('List FastAPI entry points without changing or deleting files'))
+        self.assertFalse(discovery_task("Find FastAPI entry points, don't delete them, but add logging"))
         self.assertFalse(discovery_task('Find and fix FastAPI entry points'))
         self.assertFalse(discovery_task('Explain how FastAPI works'))
 
@@ -124,4 +140,4 @@ class EvidenceTests(unittest.TestCase):
             output = []
             with self.assertRaisesRegex(ValueError, 'token limit'):
                 run(Model(), Workspace(root), 'Explain', output=output.append)
-            self.assertTrue(any('"generated_tokens": 1024' in line for line in output))
+            self.assertIn('Ollama metrics: generation 90.0s; 1,024 generated', output)

@@ -5,6 +5,10 @@ from collections import Counter
 from pathlib import PurePosixPath
 
 LIMIT = 4000
+# Start at a token boundary and require an alphabetic extension, so URLs and host:port pairs are not citations.
+CITATION = re.compile(r"(?<![\w./:-])(?:repo/)?([\w./-]+\.[A-Za-z]\w*):(\d+)(?:-(\d+))?(?![\d/])")
+EDIT_VERB = r"(?:edit|modif|chang|creat|fix|implement|add|writ|delet)\w*"
+NEGATED_EDIT = re.compile(rf"\b(?:do\s+not|don['’]?t|never|without)\s+{EDIT_VERB}(?:\s*(?:,|/|or|and)\s*{EDIT_VERB})*")
 
 
 def classify(path, snippet=""):
@@ -55,7 +59,13 @@ def discovery_task(task):
     text = task.lower()
     return ("fastapi" in text and bool(re.search(r"entry[ -]?points?", text))
             and bool(re.search(r"\b(find|list|identify|locate|discover)\b", text))
-            and not re.search(r"\b(edit|modify|change|create|fix|implement|add|write|delete)\b", text.replace("do not modify", "")))
+            and not re.search(r"\b(edit|modify|change|create|fix|implement|add|write|delete)\b", NEGATED_EDIT.sub("", text)))
+
+
+def mentions(line, path):
+    """Match a whole path token, so app/main.py does not match tests/app/main.py."""
+    path = re.escape(path.removeprefix("repo/"))
+    return re.search(rf"(?<![\w./-])(?:repo/)?{path}(?![\w/-]|\.\w)", line) is not None
 
 
 def check_answer(answer, evidence, *, discovery=False):
@@ -69,7 +79,7 @@ def check_answer(answer, evidence, *, discovery=False):
         r"\b(?:the|only|single|sole)\s+(?:fastapi\s+)?entry[ -]?point\s+(?:is|was|can be|has been)", answer, re.I
     ):
         issues.append("The answer implies a single entry point, but multiple service candidates were found.")
-    citations = re.findall(r"(?:repo/)?([\w./-]+\.[\w]+):(\d+)(?:-(\d+))?", answer)
+    citations = CITATION.findall(answer)
     valid = set()
     for path, start, end in citations:
         path = path.removeprefix("repo/")
@@ -98,7 +108,7 @@ def check_answer(answer, evidence, *, discovery=False):
                 section = None
             if section:
                 for row in evidence:
-                    if row['path'] in line and row['kind'] != section:
+                    if mentions(line, row['path']) and row['kind'] != section:
                         issues.append(f"Classification mismatch: {row['path']} is labeled {row['kind']} in evidence, not {section}.")
     return issues
 

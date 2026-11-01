@@ -64,6 +64,66 @@ def action_key(reply):
             "" if reply.get("action") == "read" else reply.get("content", ""))
 
 
+SHOWN_ROWS = 20
+
+
+def clip(text, width=100):
+    text = " ".join(text.split())
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def format_search(data):
+    """Readable terminal view of a search result; the model still receives the full JSON."""
+    matches = data["matches"]
+    limited = data.get("limit_reached") or data.get("candidate_limit_reached")
+    skipped = f", {data['files_skipped']} skipped" if data.get("files_skipped") else ""
+    lines = [f"Found {len(matches)} match{'es' if len(matches) != 1 else ''} for {json.dumps(data.get('query', ''))} "
+             f"in {data.get('scope', '.')} ({data.get('files_searched', 0)} files searched{skipped})"
+             + ("; results limited" if limited else "")]
+    width = max((len(f"{m['path']}:{m['line']}") for m in matches[:SHOWN_ROWS]), default=0)
+    lines += [f"  {m['path'] + ':' + str(m['line']):<{width}}  {clip(m['text'])}" for m in matches[:SHOWN_ROWS]]
+    if len(matches) > SHOWN_ROWS:
+        lines.append(f"  … {len(matches) - SHOWN_ROWS} more matches passed to the model")
+    return "\n".join(lines)
+
+
+def format_retrieval(data):
+    """Readable terminal view of retrieved passages; the model still receives the full JSON."""
+    rows = data["results"]
+    limited = data.get("budget_limited") or data.get("results_limited")
+    lines = [f"Retrieved {len(rows)} passage{'s' if len(rows) != 1 else ''} "
+             f"({data.get('context_bytes', 0):,} of {data.get('context_budget_bytes', 0):,} bytes)"
+             + ("; results limited" if limited else "")]
+    labels = [f"{row['source']}:{row['start_line']}-{row['end_line']}" for row in rows]
+    width = max(map(len, labels), default=0)
+    for label, row in zip(labels, rows):
+        detail = (f"score {row.get('score', 0):.2f}" if row.get("kind", "match") == "match"
+                  else f"{row.get('kind', 'passage')} via {row.get('via', '?')}")
+        if row.get("symbol"):
+            detail += f", {row['symbol']}" + ("" if row.get("symbol_complete") else " (partial)")
+        lines.append(f"  {label:<{width}}  {detail}")
+    return "\n".join(lines)
+
+
+def format_metrics(metrics):
+    """One-line model timing and token summary from Ollama's reported metrics."""
+    parts = []
+    phases = [f"{name} {metrics[key]:.1f}s" for key, name in
+              (("load_seconds", "load"), ("prompt_seconds", "prompt"), ("generation_seconds", "generation"))
+              if key in metrics]
+    if "total_seconds" in metrics:
+        parts.append(f"{metrics['total_seconds']:.1f}s total" + (f" ({', '.join(phases)})" if phases else ""))
+    elif phases:
+        parts.append(", ".join(phases))
+    if "prompt_tokens" in metrics:
+        cached = metrics.get("cached_tokens")
+        parts.append(f"{metrics['prompt_tokens']:,} prompt tokens"
+                     + (f" ({cached:,} cached)" if isinstance(cached, int) else ""))
+    if "generated_tokens" in metrics:
+        rate = metrics.get("tokens_per_second")
+        parts.append(f"{metrics['generated_tokens']:,} generated" + (f" at {rate:.1f} tok/s" if rate else ""))
+    return "Ollama metrics: " + ("; ".join(parts) or "no timings or token counts reported")
+
 
 class AgentState(TypedDict):
     messages: list[dict[str, str]]
@@ -127,7 +187,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             reporter.join()
             metrics = getattr(model, "last_metrics", None)
             if isinstance(metrics, dict) and metrics:
-                output("Ollama metrics: " + json.dumps(metrics, ensure_ascii=False))
+                output(format_metrics(metrics))
         if (not isinstance(reply, dict) or set(reply) != set(SCHEMA["required"])
                 or any(not isinstance(reply[k], str) for k in SCHEMA["required"])
                 or reply["action"] not in ("read", "search", "retrieve", "write", "run_tests", "finish")):
@@ -182,6 +242,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             limited |= truncated
         except (ValueError, OSError, UnicodeError) as exc:
             result = f"Tool error: {exc}"
+            output(result)
         return {**tool_result(state, result), "search_evidence": evidence, "evidence_limited": limited}
 
     def search_files(state: AgentState):
@@ -193,9 +254,10 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             data = json.loads(result)
             evidence, truncated = retain(evidence, data["matches"])
             limited |= truncated or data.get("limit_reached", False) or data.get("candidate_limit_reached", False)
+            output(format_search(data))
         except (ValueError, OSError, UnicodeError) as exc:
             result = f"Tool error: {exc}"
-        output(result)
+            output(result)
         return {**tool_result(state, result), "search_evidence": evidence, "evidence_limited": limited}
 
     def retrieve_references(state: AgentState):
@@ -213,9 +275,10 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                                                       "end_line": row["end_line"], "text": row["text"]}
                                                      for row in data["results"]])
             limited |= truncated or data.get("budget_limited", False) or data.get("results_limited", False)
+            output(format_retrieval(data))
         except (ValueError, OSError, UnicodeError) as exc:
             result = f"Tool error: {exc}"
-        output(result)
+            output(result)
         return {**tool_result(state, result), "search_evidence": evidence, "evidence_limited": limited}
 
     def write_file(state: AgentState):

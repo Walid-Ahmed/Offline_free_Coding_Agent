@@ -54,7 +54,9 @@ class KnowledgeBase:
         self.directory = directory
         self.workspace_root = workspace.root if isinstance(workspace, Workspace) else workspace
         self.excludes = workspace.excludes if isinstance(workspace, Workspace) else tuple(excludes)
-        repository = Workspace(self.workspace_root, excludes=self.excludes) if self.workspace_root is not None else None
+        # Reuse a supplied workspace so its cached exclusion decisions are shared.
+        repository = (workspace if isinstance(workspace, Workspace) else
+                      Workspace(self.workspace_root, excludes=self.excludes) if self.workspace_root is not None else None)
         if repository is not None:
             self.workspace_root = repository.root
         self.excluded_reference_roots = 0
