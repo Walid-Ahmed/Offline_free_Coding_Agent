@@ -204,7 +204,7 @@ parse-failure count combines Python and JavaScript/TypeScript failures.
 
 ## Retrieval budgets and complete symbols
 
-The default retrieval budget remains 16,000 UTF-8 bytes, configurable from 2,000 to
+The CLI default retrieval budget is 4,000 UTF-8 bytes (library default: 16,000), configurable from 2,000 to
 16,000 using `--retrieval-budget BYTES`. Library callers can pass
 `KnowledgeBase(..., context_budget=8000)`. The setting persists across index refresh.
 `context_budget_bytes` and `context_bytes` describe the cap and actual serialized

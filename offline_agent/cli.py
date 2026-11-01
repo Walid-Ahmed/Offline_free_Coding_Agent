@@ -16,8 +16,12 @@ def main(argv=None):
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="Additional Git-style exclusion; repeat for multiple patterns")
     parser.add_argument("--knowledge-base", help="Local reference directory; defaults to workspace/knowledge")
-    parser.add_argument("--retrieval-budget", type=int, default=16000, metavar="BYTES",
-                        help="Retrieval JSON budget in UTF-8 bytes (2000..16000; default 16000)")
+    parser.add_argument("--retrieval-budget", type=int, default=4000, metavar="BYTES",
+                        help="Retrieval JSON budget in UTF-8 bytes (2000..16000; default 4000)")
+    parser.add_argument("--max-output-tokens", type=int, default=1024,
+                        help="Maximum response tokens per action (256..8192; default 1024)")
+    parser.add_argument("--prompt-budget", type=int, default=12000, metavar="BYTES",
+                        help="Conversation content budget (8000..64000 UTF-8 bytes; default 12000)")
     parser.add_argument("--test-runner", choices=("unittest", "pytest"), default="unittest")
     parser.add_argument("--test-image", default=DEFAULT_IMAGE, help="Prepared local Docker image for isolated tests")
     parser.add_argument("--test-docker-socket", help="Absolute local Unix Docker socket; remote daemons are unsupported")
@@ -31,7 +35,8 @@ def main(argv=None):
     if not args.doctor and not args.task:
         parser.error("a task is required unless --doctor is used")
     try:
-        model = Ollama(endpoint=args.endpoint)
+        model = Ollama(endpoint=args.endpoint, max_output_tokens=args.max_output_tokens,
+                       prompt_budget=args.prompt_budget)
         model.check_model()
         if args.doctor:
             print(f"Local Ollama is ready: {MODEL}")

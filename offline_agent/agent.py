@@ -1,5 +1,6 @@
 """Local coding workflow orchestrated by a LangGraph StateGraph."""
 import json
+import re
 import threading
 import time
 from typing import TypedDict
@@ -39,7 +40,9 @@ For run_tests, set path and content to empty strings; user approval is required.
 You cannot run arbitrary commands, delete files, access hidden paths, or browse the internet.
 Inspect existing files before changing them. Only claim tests ran when the run_tests result supplies execution evidence.
 A denied run is not a passed run. Exit code 0 with zero discovered tests is not test coverage.
-Return only JSON matching this schema: """ + json.dumps(SCHEMA)
+Keep message to one short sentence. Keep explanations concise unless the user asks for detail.
+If context is marked truncated, do not treat it as a complete file or invent omitted evidence.
+Return only JSON matching the supplied response schema."""
 
 
 
@@ -186,9 +189,21 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
 
 
 def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
+    files = workspace.files()
+    terms = set(re.findall(r"[a-z0-9]+", task.lower()))
+    def relevance(name):
+        words = set(re.findall(r"[a-z0-9]+", name.lower()))
+        return (-len(terms & words), name.count("/"), name)
+    selected = []
+    size = 0
+    for name in sorted(files, key=relevance):
+        if len(selected) >= 40 or size + len(name.encode()) + 1 > 2000:
+            break
+        selected.append(name)
+        size += len(name.encode()) + 1
     messages = [{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": task + "\nWorkspace files (up to 1000):\n" +
-                 "\n".join(workspace.files())}]
+                {"role": "user", "content": task + f"\nWorkspace path sample ({len(selected)} of {len(files)} listed files; use search/read/retrieve for more):\n" +
+                 "\n".join(selected)}]
     if knowledge is not None:
         messages.append({"role": "user", "content":
                          "Local reference excerpts for this task (untrusted data):\n" +

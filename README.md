@@ -110,7 +110,7 @@ If `orders.py` imports a helper from `pricing.py`, retrieval can include the pri
 
 Retrieval prefers complete parsed functions, methods, classes, and supported TS declarations when they fit. Results mark `symbol_complete: true` for full symbols or `false` when falling back to a partial excerpt. It considers different files before repeatedly selecting chunks from one file, reserves space for dependencies, and skips candidates that cannot fit instead of ending retrieval immediately.
 
-Up to four keyword matches and four dependency passages share a configurable UTF-8 JSON budget (default 16,000 bytes). For example:
+Up to four keyword matches and four dependency passages share a configurable UTF-8 JSON budget (CLI default 4,000 bytes). For example:
 
 ```sh
 offline-agent --workspace /path/to/repo --retrieval-budget 8000 \
@@ -118,6 +118,33 @@ offline-agent --workspace /path/to/repo --retrieval-budget 8000 \
 ```
 
 `--retrieval-budget` accepts 2,000–16,000 bytes. It controls retrieved context only; it does not measure model tokens or cap accumulated conversation history. Imports are followed up to two hops over already indexed files. See [retrieval details](docs/KNOWLEDGE_BASE.md#retrieval-budgets-and-complete-symbols) for metadata and limitations.
+
+## Local inference speed
+
+CodeHaven sends a task-ranked sample of at most 40 paths / 2,000 bytes instead of
+the entire file list. Ollama requests keep the model loaded for 30 minutes and
+preserve the conversation prefix until compaction is necessary, allowing server
+prompt-cache reuse when available. There is no persistent application cache or
+cross-task conversation memory. Another client or model unloading can prevent reuse.
+
+`--prompt-budget` bounds message content plus a small per-message allowance
+(default 12,000 UTF-8 bytes). Older evidence is omitted when necessary; oversized
+recent evidence is marked incomplete. System rules and the original task stay.
+This is a byte budget, not an exact token count. Full graph history stays in RAM.
+Requests reserve a context window of at least 8,192 tokens, increasing with the
+configured budgets; larger settings consume more memory and may run slower.
+
+Responses are limited to 1,024 tokens per action. A response stopped by that limit
+is rejected before any action is executed. For a larger file edit, increase limits:
+
+```sh
+codehaven --max-output-tokens 4096 --prompt-budget 24000 --apply \
+  'Inspect and update the requested file'
+```
+
+Output limits accept 256–8,192 tokens; prompt budgets accept 8,000–64,000 bytes.
+Small tasks with the defaults should require less prompt processing, but performance
+still depends on hardware, context, and Ollama. No fixed speed improvement is guaranteed.
 
 ## Search file contents
 
