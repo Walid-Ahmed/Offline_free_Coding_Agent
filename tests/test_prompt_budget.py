@@ -32,16 +32,17 @@ class PromptBudgetTests(unittest.TestCase):
     def test_response_cap_and_warm_model_options(self):
         client = Ollama()
         reply = {"action": "finish", "path": "", "message": "Done", "content": "Answer"}
-        with patch.object(client, "request", return_value={"message": {"content": json.dumps(reply)}}) as request:
+        with patch.object(client, "stream_chat", return_value={"message": {"content": json.dumps(reply)}}) as request:
             self.assertEqual(client.chat([], {}), reply)
-        payload = request.call_args.args[1]
+        payload = request.call_args.args[0]
+        self.assertTrue(payload['stream'])  # Always streamed so a looping answer can be stopped early.
         self.assertEqual(payload['keep_alive'], '30m')
         self.assertEqual(payload['options']['num_predict'], 1024)
         self.assertEqual(payload['model'], 'qwen2.5-coder:7b')
 
     def test_capped_response_never_becomes_an_action_even_if_valid_json(self):
         client = Ollama()
-        with patch.object(client, "request", return_value={"done_reason": "length", "message": {"content": '{}'}}):
+        with patch.object(client, "stream_chat", return_value={"done_reason": "length", "message": {"content": '{}'}}):
             with self.assertRaisesRegex(ValueError, "no partial action"):
                 client.chat([], {})
 

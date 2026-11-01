@@ -50,17 +50,30 @@ python3 -m offline_agent \
   'Read the calculator module and add input validation'
 ```
 
+For several questions in a row, start an interactive session. Follow-ups see earlier questions and answers, and the index refreshes between tasks. Type `/reset` to forget earlier answers and `exit` to quit:
+
+```sh
+python3 -m offline_agent --workspace /absolute/path/to/project --interactive
+```
+
+Final answers stream to the terminal as the model writes them. Use `--no-stream` to print each answer only when it is complete.
+
 After installation, you can replace `python3 -m offline_agent` with `codehaven`. The existing `offline-agent` command remains supported (on Windows, use `python -m offline_agent`). Reinstall the package after updating to register the new command. Installation downloads LangGraph and its dependencies; runtime does not require internet access.
 
 ## LangGraph workflow
 
 ```text
 START -> model -> read, search, retrieve, edit, write, or run_tests -> model
+             |-> invalid reply -> correction message -> model (once)
              \-> finish -> END
                     tool at action limit -> limit -> END
 ```
 
-The graph holds conversation messages, the current action, the action count, and the exit code in memory. It uses conditional edges to dispatch actions. Each write still requires your confirmation in `--apply` mode. The action limit counts model responses, not internal graph nodes. Graph recursion has a separate guard sized to that limit. This version does not add persistent checkpoints, saved sessions, or automatic retries of writes.
+The graph holds conversation messages, the current action, the action count, and the exit code in memory. It uses conditional edges to dispatch actions. Each write still requires your confirmation in `--apply` mode. The action limit counts model responses, not internal graph nodes. Graph recursion has a separate guard sized to that limit. This version does not add persistent checkpoints or automatic retries of writes.
+
+If the model returns invalid JSON, an unknown action, missing fields, or a reply cut off at the token limit, no tool runs. The model gets one correction message explaining what was wrong, and the retry counts as a step. A second invalid reply in a row stops the task with exit code 1. Failures to reach Ollama are never retried.
+
+Small models at temperature 0 sometimes repeat the same sentences until they hit the token limit. Replies are always streamed from Ollama, so a final answer that keeps repeating a phrase is stopped as soon as the loop is detected. The text before the repetition is kept as the answer, marked with a note. Forced final answers are also capped at 3,000 characters. The repeat penalty is left unchanged on purpose, because edits must copy file text exactly.
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Remote tracing is not supported. Every run is wrapped in [`tracing_context(enabled=False)`](https://docs.langchain.com/langsmith/trace-without-env-vars), so `LANGSMITH_TRACING`, `LANGCHAIN_TRACING_V2`, or an API key in your environment cannot turn uploads on. No tracing client is ever created. For timing and token details, use the local `Ollama metrics:` line printed after each model call.
 
@@ -72,6 +85,8 @@ Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/
 - Edits existing files with exact SEARCH/REPLACE blocks, so changing a few lines of a large file costs a few output tokens instead of a full rewrite. Each SEARCH text must match exactly once. Otherwise nothing changes and the model is told why. Edits use the same diff preview and per-file confirmation as writes.
 - Runs unittest or pytest in isolated Docker containers after approval, with networking disabled, read-only project snapshots, a 30-second timeout, and bounded output.
 - Shows unified diffs before edits, with confirmation for each write.
+- Parses proposed `.py` and `.pyi` content with `ast.parse` before showing a diff. The parser never runs the code. A change that introduces a syntax error is neither previewed nor written. Instead, the model gets the error line so it can fix the change. Files that were already broken are not blocked.
+- Keeps long tasks within the prompt budget by first replacing older tool results and file contents with one-line stubs, oldest first, such as `Tool result for read big.py … [Older result compacted: 9,412 bytes omitted]`. Older messages are dropped only if that is not enough.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
 - Rejects traversal, hidden paths, symlinks, and hard-linked write targets.
 - Connects only to numeric HTTP loopback endpoints, with proxies and redirects disabled.
@@ -237,7 +252,7 @@ The agent asks for approval before each run. Tests receive a filtered, read-only
 
 This prototype uses Docker isolation for tests; file tools themselves are not an OS sandbox. It runs only the fixed test commands described above; it cannot accept arbitrary commands, install dependencies, delete files through a tool, or roll back writes. Review changes with Git. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
 
-Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. Conversation context accumulates within a task and can exceed small model context windows; there is no persistent memory or automatic context compaction yet. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
+Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. Conversation context accumulates within a task. Compaction keeps it within `--prompt-budget`, but stubbed results must be read again if the model needs them. Interactive sessions remember only recent questions, answers, and cited evidence. Nothing is saved to disk between sessions. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
 
 ## Development
 
@@ -246,7 +261,7 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q offline_agent tests
 ```
 
-Tests include a simulated agent workflow and a real loopback HTTP fixture, without downloading a model. A live model smoke test is separate: run `--doctor`, then ask it to create a function in a disposable project, confirm its diff, and test the result.
+Tests include a simulated agent workflow and a real loopback HTTP fixture, without downloading a model.
 
 See [the implementation plan and roadmap](docs/PLAN.md) for architecture, acceptance criteria, and next steps. API integration follows [Ollama chat](https://docs.ollama.com/api/chat) and [structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
 

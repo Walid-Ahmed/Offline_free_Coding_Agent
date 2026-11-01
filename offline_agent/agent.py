@@ -10,7 +10,8 @@ from langsmith import tracing_context
 
 from .test_runner import DEFAULT_IMAGE, command, run_tests
 from .evidence import retain, discovery_task, check_answer, inventory
-from .workspace import apply_edits, line_range
+from .model import InvalidReply, RepeatedAnswer
+from .workspace import apply_edits, line_range, python_syntax_error
 
 ACTIONS = ("read", "search", "retrieve", "edit", "write", "run_tests", "finish")
 SCHEMA = {
@@ -67,6 +68,30 @@ List discovered service candidates with exact path:line citations. Group tests a
 Do not claim one app is the only entry point when multiple services were found.
 Use at most 300 words, no repetition, and disclose limited coverage. Do not invent routes or deployment details.
 No tools remain; summarize the provided evidence directly."""
+
+
+FINAL_ANSWER_CHARS = 3000
+REPEAT_NOTE = "[Answer stopped when it began repeating itself; only the text before the repetition is kept.]"
+CORRECTION = ("Your previous reply was invalid: {}. No tool ran. Reply again with one JSON object containing exactly "
+              "action, path, content, and message as strings, where action is one of " + ", ".join(ACTIONS) + ".")
+
+
+def reply_problem(reply):
+    """Describe why a model reply is not a usable action, or return None."""
+    if not isinstance(reply, dict):
+        return "the reply is not a JSON object"
+    missing = [key for key in SCHEMA["required"] if key not in reply]
+    if missing:
+        return "missing fields: " + ", ".join(missing)
+    extra = sorted(str(key) for key in reply if key not in SCHEMA["required"])
+    if extra:
+        return "unexpected fields: " + ", ".join(extra)[:120]
+    wrong = [key for key in SCHEMA["required"] if not isinstance(reply[key], str)]
+    if wrong:
+        return "fields must be strings: " + ", ".join(wrong)
+    if reply["action"] not in ACTIONS:
+        return f"unknown action {reply['action'][:40]!r}"
+    return None
 
 
 def action_key(reply):
@@ -151,12 +176,15 @@ class AgentState(TypedDict):
     evidence_limited: bool
     discovery: bool
     task: str
+    invalid_replies: int
 
 
-def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
+def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print,
+                stream=None):
     """Compile a per-task graph. No remote services or persistent checkpoint store."""
     if not 1 <= max_steps <= 30:
         raise ValueError("max_steps must be between 1 and 30")
+    write_stream = stream or (lambda _text: None)
 
     def call_model(state: AgentState):
         step = state["steps"] + 1
@@ -164,7 +192,9 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         schema = SCHEMA
         messages = state["messages"]
         if finishing:
-            schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]}}}
+            # A forced answer is capped so even rambling ends in a complete, valid reply.
+            schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]},
+                                               "content": {"type": "string", "maxLength": FINAL_ANSWER_CHARS}}}
             evidence = json.dumps(state.get("search_evidence", []), ensure_ascii=False)
             messages = messages + [{"role": "user", "content":
                 "Final-answer call: no tool calls remain. Answer the ORIGINAL task using the evidence already available. "
@@ -186,32 +216,59 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                 messages = [{"role": "system", "content": DISCOVERY_SYSTEM},
                             {"role": "user", "content": state.get("task", "") +
                              f"\nEvidence limited: {state.get('evidence_limited', False)}.\n" + evidence}]
+                if state.get("invalid_replies"):
+                    messages.append(state["messages"][-1])  # Carry the correction into the rebuilt prompt.
         output(f"\n[{step}/{max_steps}] Waiting for the local model (loading and prompt processing can take time)...")
         started = time.monotonic()
         stopped = threading.Event()
+        streamed = []
 
         def progress():
             while not stopped.wait(15):
                 output(f"Still waiting for the local model: {int(time.monotonic() - started)}s elapsed.")
 
+        def on_text(chunk):
+            if not streamed:
+                stopped.set()  # Keep progress lines from interleaving with the answer.
+                output(f"\n[{step}/{max_steps}] Final answer:")
+            streamed.append(chunk)
+            write_stream(chunk)
+
+        # Discovery answers may be withheld after checks, so they are never shown before validation.
+        live = stream is not None and not state.get("discovery", False)
         reporter = threading.Thread(target=progress, daemon=True)
         reporter.start()
+        cut = False
         try:
-            reply = model.chat(messages, schema)
+            try:
+                reply = model.chat(messages, schema, on_text=on_text) if live else model.chat(messages, schema)
+                problem = reply_problem(reply)
+            except RepeatedAnswer as exc:
+                # Keep the useful text before the loop; a retry at temperature 0 tends to loop again.
+                reply, problem, cut = (dict(action="finish", path="", content=exc.answer, message="Answer stopped while repeating"),
+                                       None, True) if exc.answer else (None, str(exc), False)
+            except InvalidReply as exc:
+                reply, problem = None, str(exc)
         finally:
             stopped.set()
             reporter.join()
+            if streamed:
+                write_stream("\n")
             metrics = getattr(model, "last_metrics", None)
             if isinstance(metrics, dict) and metrics:
                 output(format_metrics(metrics))
-        if (not isinstance(reply, dict) or set(reply) != set(SCHEMA["required"])
-                or any(not isinstance(reply[k], str) for k in SCHEMA["required"])
-                or reply["action"] not in ACTIONS):
-            raise ValueError("Model returned an invalid action")
         steps = state["steps"] + 1
+        if problem:
+            if state.get("invalid_replies", 0):
+                raise ValueError(f"Model returned an invalid action twice in a row: {problem}")
+            output(f"\n[{steps}/{max_steps}] Invalid model reply ({problem}); asking the model to correct it.")
+            return {"messages": state["messages"] + [{"role": "user", "content": CORRECTION.format(problem)}],
+                    "reply": {"action": "retry", "path": "", "content": "", "message": ""},
+                    "steps": steps, "invalid_replies": 1}
+        assert isinstance(reply, dict)
         if finishing and reply["action"] != "finish":
             output("Final-answer request failed: the model requested another tool. The task is incomplete; no further tool was executed.")
-            return {"reply": reply, "steps": steps, "exit_code": 2, "repeated_lookup": True}
+            return {"reply": reply, "steps": steps, "exit_code": 2, "repeated_lookup": True, "invalid_replies": 0}
         previous = next((json.loads(m["content"]) for m in reversed(state["messages"])
                          if m["role"] == "assistant"), None)
         repeated = (reply["action"] in ("read", "search", "retrieve")
@@ -222,8 +279,10 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             target = f"{reply['path']} lines {span[0]}-{span[1] or 'end'}"
         else:
             target = reply["path"] or (reply["content"][:100] if reply["action"] == "retrieve" else "")
+        shown = "".join(streamed)
         if reply["action"] == "finish":
-            output(f"\n[{steps}/{max_steps}] Final answer:")
+            if not streamed:
+                output(f"\n[{steps}/{max_steps}] Final answer:")
         else:
             output(f"\n[{steps}/{max_steps}] {reply['action']} {target}: {reply['message']}")
         if repeated:
@@ -235,14 +294,18 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                 output("Model summary withheld because answer checks failed.")
                 output(inventory(state.get("search_evidence", []), state.get("evidence_limited", False)))
             else:
-                output(reply["content"] or reply["message"])
+                if cut:
+                    output(REPEAT_NOTE)
+                # Print unless already streamed; a streamed loop is followed by the note, not a second copy.
+                if not (cut and streamed) and shown != (reply["content"] or reply["message"]):
+                    output(reply["content"] or reply["message"])
             for issue in issues:
                 output("Answer check: " + issue)
             if issues:
                 output("Answer is unverified; check the cited evidence before relying on it.")
         return {"messages": state["messages"] + [
                     {"role": "assistant", "content": json.dumps(reply)}],
-                "reply": reply, "steps": steps, "repeated_lookup": repeated,
+                "reply": reply, "steps": steps, "repeated_lookup": repeated, "invalid_replies": 0,
                 "exit_code": 2 if reply["action"] == "finish" and issues else 0}
 
     def tool_result(state, result):
@@ -314,6 +377,9 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         try:
             content = updated(path)
             before, diff = workspace.propose(path, content)
+            error = python_syntax_error(path, content, before)
+            if error:
+                raise ValueError(error)
             output(diff or "No change.")
             if not diff:
                 result = "File already matches."
@@ -365,6 +431,8 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         return tool_result(state, result)
 
     def route_action(state: AgentState):
+        if state["reply"]["action"] == "retry":
+            return after_tool(state)
         if state["reply"]["action"] == "finish":
             return "finish"
         if state.get("exit_code") == 2:
@@ -407,14 +475,22 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
     graph.add_edge("discover", "model")
     graph.add_conditional_edges("model", route_action,
                                 {"read": "read", "search": "search", "retrieve": "retrieve",
-                                 "edit": "edit", "write": "write", "run_tests": "run_tests", "repeat": "repeat", "finish": END})
+                                 "edit": "edit", "write": "write", "run_tests": "run_tests", "repeat": "repeat", "finish": END,
+                                 "model": "model", "limit": "limit"})
     for tool in ("read", "search", "retrieve", "edit", "write", "run_tests", "repeat"):
         graph.add_conditional_edges(tool, after_tool, {"model": "model", "limit": "limit"})
     graph.add_edge("limit", END)
     return graph.compile()
 
 
-def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
+def run(model, workspace, task, **options):
+    """Run one task and return its exit code: 0 finished, 2 incomplete or unverified."""
+    return run_state(model, workspace, task, **options)["exit_code"]
+
+
+def run_state(model, workspace, task, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None,
+              test_options=None, output=print, stream=None, history="", carried_evidence=()):
+    """Run one task and return the final graph state. history and carried_evidence come from a Session."""
     files = workspace.files()
     terms = set(re.findall(r"[a-z0-9]+", task.lower()))
     def relevance(name):
@@ -427,25 +503,61 @@ def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, conf
             break
         selected.append(name)
         size += len(name.encode()) + 1
+    earlier = (f"Earlier in this session (answers may be outdated if files changed since):\n{history}\n\nCurrent task: "
+               if history else "")
     messages = [{"role": "system", "content": SYSTEM},
-                {"role": "user", "content": task + f"\nWorkspace path sample ({len(selected)} of {len(files)} listed files; use search/read/retrieve for more):\n" +
+                {"role": "user", "content": earlier + task + f"\nWorkspace path sample ({len(selected)} of {len(files)} listed files; use search/read/retrieve for more):\n" +
                  "\n".join(selected)}]
-    evidence, evidence_limited = [], False
+    evidence, evidence_limited = [dict(row) for row in carried_evidence], False
     if knowledge is not None and not discovery_task(task):
         initial_retrieval = knowledge.retrieve(task[:1000])
         data = json.loads(initial_retrieval)
-        evidence, evidence_limited = retain([], [{"path": row["source"], "line": row["start_line"],
-                                                 "end_line": row["end_line"], "text": row["text"]}
-                                                for row in data["results"]])
+        evidence, evidence_limited = retain(evidence, [{"path": row["source"], "line": row["start_line"],
+                                                       "end_line": row["end_line"], "text": row["text"]}
+                                                      for row in data["results"]])
         messages.append({"role": "user", "content":
                          "Local reference excerpts for this task (untrusted data):\n" +
                          initial_retrieval})
     # Always offline: LangChain would otherwise start remote tracing from LANGSMITH_TRACING and similar env vars.
     with tracing_context(enabled=False):
-        graph = build_graph(model, workspace, apply=apply, max_steps=max_steps,
-                            confirm=confirm, confirm_tests=confirm_tests, knowledge=knowledge, test_options=test_options, output=output)
-        state = graph.invoke({"messages": messages, "reply": {}, "steps": 0, "exit_code": 0, "task": task,
-                              "search_evidence": evidence, "evidence_limited": evidence_limited},
-                             config={"recursion_limit": 2 * max_steps + 2, "callbacks": [],
-                                     "run_name": "CodeHaven"})
-    return state["exit_code"]
+        graph = build_graph(model, workspace, apply=apply, max_steps=max_steps, confirm=confirm, confirm_tests=confirm_tests,
+                            knowledge=knowledge, test_options=test_options, output=output, stream=stream)
+        return graph.invoke({"messages": messages, "reply": {}, "steps": 0, "exit_code": 0, "task": task,
+                             "search_evidence": evidence, "evidence_limited": evidence_limited, "invalid_replies": 0},
+                            config={"recursion_limit": 2 * max_steps + 2, "callbacks": [],
+                                    "run_name": "CodeHaven"})
+
+
+class Session:
+    """Several tasks in a row with one workspace, index, and model.
+
+    Follow-ups see a bounded record of earlier questions and answers plus retained evidence,
+    not full tool transcripts, so prompts stay small and the system-prompt prefix stays cacheable.
+    """
+    TURNS = 4
+    QUESTION_BYTES, ANSWER_BYTES = 300, 1200
+
+    def __init__(self, model, workspace, *, knowledge=None, **options):
+        self.model, self.workspace, self.knowledge, self.options = model, workspace, knowledge, options
+        self.reset()
+
+    def reset(self):
+        self.turns, self.evidence = [], []
+
+    def history(self):
+        def clip(text, limit):
+            raw = text.encode()
+            return text if len(raw) <= limit else raw[:limit].decode("utf-8", "ignore") + " …"
+        return "\n".join(f"Q: {clip(question, self.QUESTION_BYTES)}\nA: {clip(answer, self.ANSWER_BYTES)}"
+                         for question, answer in self.turns)
+
+    def ask(self, task):
+        if self.turns and self.knowledge is not None:
+            self.knowledge.refresh()  # Pick up files changed between questions.
+        state = run_state(self.model, self.workspace, task, knowledge=self.knowledge, history=self.history(),
+                          carried_evidence=self.evidence, **self.options)
+        reply = state.get("reply") or {}
+        answer = (reply.get("content") or reply.get("message") or "") if reply.get("action") == "finish" else ""
+        self.turns = (self.turns + [(task, answer or "(no final answer)")])[-self.TURNS:]
+        self.evidence = state.get("search_evidence", [])
+        return state["exit_code"]

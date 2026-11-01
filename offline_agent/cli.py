@@ -3,10 +3,43 @@ from functools import partial
 import sys
 from pathlib import Path
 from .knowledge import KnowledgeBase
-from .agent import run
+from .agent import Session, run
 from .model import MODEL, Ollama
 from .workspace import Workspace
 from .test_runner import DEFAULT_IMAGE
+
+EXIT_WORDS = {"exit", "quit", "/exit", "/quit"}
+
+
+def write_stream(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def interactive(session, first_task=None, prompt=input):
+    """Read tasks until exit. One failed or interrupted task does not end the session."""
+    print("Interactive session. Type a task, /reset to forget earlier answers, or exit to quit.", flush=True)
+    task = first_task
+    while True:
+        if task is None:
+            try:
+                task = prompt("\ncodehaven> ").strip()
+            except EOFError:
+                print()
+                return 0
+        if task.lower() in EXIT_WORDS:
+            return 0
+        if task == "/reset":
+            session.reset()
+            print("Session history cleared.", flush=True)
+        elif task:
+            try:
+                session.ask(task)
+            except (ValueError, OSError) as exc:
+                print(f"Error: {exc}", file=sys.stderr, flush=True)
+            except KeyboardInterrupt:
+                print("\nStopped this task.", file=sys.stderr, flush=True)
+        task = None
 
 
 def main(argv=None):
@@ -29,11 +62,14 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true", help="Allow writing after per-file confirmation")
     parser.add_argument("--max-steps", type=int, default=12, choices=range(1, 31), metavar="1..30")
     parser.add_argument("--doctor", action="store_true", help="Check local server and installed model")
+    parser.add_argument("-i", "--interactive", action="store_true",
+                        help="Ask several tasks in one session; follow-ups see earlier answers")
+    parser.add_argument("--no-stream", action="store_true", help="Print the final answer only once it is complete")
     args = parser.parse_args(argv)
     if not 2000 <= args.retrieval_budget <= 16000:
         parser.error("--retrieval-budget must be between 2000 and 16000 bytes")
-    if not args.doctor and not args.task:
-        parser.error("a task is required unless --doctor is used")
+    if not args.doctor and not args.interactive and not args.task:
+        parser.error("a task is required unless --doctor or --interactive is used")
     try:
         model = Ollama(endpoint=args.endpoint, max_output_tokens=args.max_output_tokens,
                        prompt_budget=args.prompt_budget)
@@ -54,14 +90,17 @@ def main(argv=None):
             print("Reference directory excluded by workspace rules; it was not indexed. "
                   "Use a permitted directory or an external reference library.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
-        return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
-                   output=partial(print, flush=True),
-                   test_options={"runner": args.test_runner, "image": args.test_image,
-                                 "docker_socket": args.test_docker_socket},
-                   confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",
-                   confirm_tests=lambda: input(
-                       f"Run {args.test_runner} in Docker with network disabled and project read-only? [y/N] "
-                   ).strip().lower() == "y")
+        options = dict(apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
+                       output=partial(print, flush=True), stream=None if args.no_stream else write_stream,
+                       test_options={"runner": args.test_runner, "image": args.test_image,
+                                     "docker_socket": args.test_docker_socket},
+                       confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",
+                       confirm_tests=lambda: input(
+                           f"Run {args.test_runner} in Docker with network disabled and project read-only? [y/N] "
+                       ).strip().lower() == "y")
+        if args.interactive:
+            return interactive(Session(model, workspace, **options), args.task)
+        return run(model, workspace, args.task, **options)
     except (ValueError, OSError, EOFError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

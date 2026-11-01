@@ -75,8 +75,9 @@ class WorkspaceTests(unittest.TestCase):
     def test_step_limit_and_invalid_action(self):
         self.assertEqual(run(FakeModel([action("read", "missing")]), self.ws,
                              "task", max_steps=1, output=lambda _: None), 2)
-        with self.assertRaises(ValueError):
-            run(FakeModel([{"action": "shell"}]), self.ws, "task")
+        # One invalid reply is corrected; a second invalid reply in a row stops the task.
+        with self.assertRaisesRegex(ValueError, "twice in a row"):
+            run(FakeModel([{"action": "shell"}, {"action": "shell"}]), self.ws, "task", output=lambda _: None)
 
 
 class TransportTests(unittest.TestCase):
@@ -124,7 +125,7 @@ class TransportTests(unittest.TestCase):
                 client = Ollama(endpoint=f"http://127.0.0.1:{server.server_port}")
                 client.check_model()
                 self.assertEqual(client.chat([], {} )["action"], "finish")
-                self.assertFalse(calls[-1][1]["stream"])
+                self.assertTrue(calls[-1][1]["stream"])
                 self.assertTrue(all(payload["model"] == MODEL for _, payload in calls))
             finally:
                 server.shutdown()

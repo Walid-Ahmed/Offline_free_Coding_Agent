@@ -1,11 +1,106 @@
 """Ollama transport: numeric loopback only, no proxies or redirects."""
 import ipaddress
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 
 MODEL = "qwen2.5-coder:7b"
+MAX_RESPONSE_BYTES = 2_000_000
+STUB_MIN_BYTES = 400
+
+
+class InvalidReply(ValueError):
+    """The model answered, but not with a usable action; the agent may ask it to correct itself."""
+
+
+class RepeatedAnswer(InvalidReply):
+    """A finish answer began looping and generation was stopped. answer holds the text before the loop."""
+
+    def __init__(self, answer):
+        super().__init__("the final answer kept repeating the same text, so generation was stopped; "
+                         "answer briefly and state each point only once")
+        self.answer = answer
+
+
+class RepetitionGuard:
+    """Stop a final answer that keeps repeating the same phrase, as small models can at temperature 0.
+
+    Checked on every streamed piece, so the window slides across a loop's shared phrase even when
+    the surrounding words drift. A global repeat penalty is avoided because edits must copy text exactly.
+    """
+    WINDOW, TIMES, DISTINCT = 60, 3, 8
+
+    def __init__(self):
+        self.text = ""
+
+    def feed(self, piece):
+        self.text += piece
+        if len(self.text) < self.WINDOW * self.TIMES:
+            return
+        tail = self.text[-self.WINDOW:]
+        # Separator runs such as "-----" are ignored; real loops have varied characters.
+        if len(set(tail)) >= self.DISTINCT and self.text.count(tail) >= self.TIMES:
+            raise RepeatedAnswer(self.before_loop(tail))
+
+    def before_loop(self, tail):
+        """Keep everything up to the loop's second pass, trimmed back to a sentence or line end."""
+        first = self.text.find(tail)
+        kept = self.text[:self.text.find(tail, first + len(tail))]
+        end = max(kept.rfind(". "), kept.rfind(".\n"), kept.rfind("\n"))
+        return (kept[:end + 1] if end > 0 else kept).strip()
+
+
+class FinishContent:
+    """Incrementally decode the content string of a streamed finish action and pass new text to emit."""
+    ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.buffer = ""
+        self.position = None
+        self.done = False
+
+    def feed(self, text):
+        self.buffer += text
+        if self.done:
+            return
+        if self.position is None:
+            content = re.search(r'"content"\s*:\s*"', self.buffer)
+            if not content or not re.search(r'"action"\s*:\s*"finish"', self.buffer):
+                return
+            self.position = content.end()
+        decoded, index, buffer = [], self.position, self.buffer
+        while index < len(buffer):
+            char = buffer[index]
+            if char == '"':
+                self.done = True
+                break
+            if char != "\\":
+                decoded.append(char)
+                index += 1
+                continue
+            if index + 1 >= len(buffer):
+                break  # Wait for the rest of the escape sequence.
+            if buffer[index + 1] != "u":
+                decoded.append(self.ESCAPES.get(buffer[index + 1], buffer[index + 1]))
+                index += 2
+                continue
+            if index + 6 > len(buffer):
+                break
+            code = int(buffer[index + 2:index + 6], 16)
+            if 0xD800 <= code < 0xDC00:  # A surrogate pair arrives as two escapes.
+                if index + 12 > len(buffer):
+                    break
+                low = int(buffer[index + 8:index + 12], 16)
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                index += 6
+            decoded.append(chr(code))
+            index += 6
+        self.position = index
+        if decoded:
+            self.emit("".join(decoded))
 
 
 def response_metrics(result):
@@ -28,10 +123,34 @@ def response_metrics(result):
     return metrics
 
 
+def stub(message):
+    """One-line stand-in for an old bulky message. Tool results keep their header line."""
+    content = message["content"]
+    size = len(content.encode("utf-8"))
+    if size <= STUB_MIN_BYTES:
+        return message
+    if message["role"] == "assistant":
+        try:
+            reply = json.loads(content)
+        except json.JSONDecodeError:
+            return message
+        body = reply.get("content") if isinstance(reply, dict) else None
+        if not isinstance(body, str) or len(body) <= 200:
+            return message
+        return {**message, "content": json.dumps({**reply, "content": f"[{len(body.encode()):,} bytes omitted]"})}
+    header = content.split("\n", 1)[0][:200]
+    if not header.startswith(("Tool result for", "Local reference excerpts")):
+        return message
+    return {**message, "content": f"{header}\n[Older result compacted: {size:,} bytes omitted. "
+                                  "Read or search again if you need it.]"}
+
+
 def compact_messages(messages, budget=12_000):
     """Keep a stable prefix until bounded history requires compaction.
 
-    Preserve system instructions and the original task; prefer recent evidence.
+    Preserve system instructions and the original task. First replace older tool results
+    and file contents with one-line stubs (oldest first), keeping the conversation's shape.
+    Only if that is not enough, drop the oldest messages and truncate the newest.
     Never mutate the graph's complete in-memory conversation.
     """
     def size(message):
@@ -45,8 +164,15 @@ def compact_messages(messages, budget=12_000):
     remaining = budget - sum(map(size, fixed)) - 160
     if remaining < 512:
         raise ValueError("Task and instructions exceed prompt budget; shorten the task or increase --prompt-budget")
+    history = list(messages[2:])
+    for index in range(len(history) - 1):  # The newest message stays intact.
+        if sum(map(size, fixed + history)) <= budget:
+            break
+        history[index] = stub(history[index])
+    if sum(map(size, fixed + history)) <= budget:
+        return fixed + history
     recent = []
-    for message in reversed(messages[2:]):
+    for message in reversed(history):
         if size(message) <= remaining:
             recent.append(message)
             remaining -= size(message)
@@ -99,8 +225,8 @@ class Ollama:
                                      headers={"Content-Type": "application/json"})
         try:
             with self.opener.open(req, timeout=self.timeout) as response:
-                raw = response.read(2_000_001)
-                if len(raw) > 2_000_000:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RESPONSE_BYTES:
                     raise ValueError("Model response exceeds 2 MB")
                 result = json.loads(raw)
                 if not isinstance(result, dict):
@@ -108,6 +234,46 @@ class Ollama:
                 return result
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ValueError(f"Local Ollama request failed: {exc}. Start Ollama and check the installed model.") from exc
+
+    def stream_chat(self, payload, on_text=None):
+        """POST a streaming chat, guard the finish answer against loops, and pass its text to on_text.
+
+        Raising inside the read loop closes the connection, which stops Ollama generating.
+        """
+        req = urllib.request.Request(self.endpoint + "/api/chat", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+        guard = RepetitionGuard()
+
+        def answer_text(text):
+            guard.feed(text)
+            if on_text is not None:
+                on_text(text)
+
+        decoder = FinishContent(answer_text)
+        pieces, received, final = [], 0, {}
+        try:
+            with self.opener.open(req, timeout=self.timeout) as response:
+                for raw in response:
+                    received += len(raw)
+                    if received > MAX_RESPONSE_BYTES:
+                        raise ValueError("Model response exceeds 2 MB")
+                    if not raw.strip():
+                        continue
+                    chunk = json.loads(raw)
+                    if not isinstance(chunk, dict):
+                        raise ValueError("Model server returned a non-object response")
+                    if chunk.get("error"):
+                        raise ValueError(f"Local Ollama error: {chunk['error']}")
+                    piece = (chunk.get("message") or {}).get("content") or ""
+                    if piece:
+                        pieces.append(piece)
+                        decoder.feed(piece)
+                    if chunk.get("done"):
+                        final = chunk
+                        break
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise ValueError(f"Local Ollama request failed: {exc}. Start Ollama and check the installed model.") from exc
+        return {**final, "message": {"content": "".join(pieces)}}
 
     def check_model(self):
         models = self.request("/api/tags").get("models", [])
@@ -118,18 +284,22 @@ class Ollama:
         if info.get("remote_host") or info.get("remote_model"):
             raise ValueError("Remote-backed models are disabled")
 
-    def chat(self, messages, schema):
+    def chat(self, messages, schema, on_text=None):
+        """Return one JSON action. Always streams from Ollama so a looping answer can be stopped early;
+        with on_text, the finish answer is also shown as it is generated."""
         self.last_metrics = {}
-        result = self.request("/api/chat", {"model": self.model, "messages": compact_messages(messages, self.prompt_budget),
-                              "stream": False, "format": schema,
-                              "keep_alive": "30m",
-                              "options": {"temperature": 0, "num_predict": self.max_output_tokens,
-                                          "num_ctx": max(8192, self.prompt_budget // 2 + self.max_output_tokens)}})
+        payload = {"model": self.model, "messages": compact_messages(messages, self.prompt_budget),
+                   "stream": True, "format": schema,
+                   "keep_alive": "30m",
+                   "options": {"temperature": 0, "num_predict": self.max_output_tokens,
+                               "num_ctx": max(8192, self.prompt_budget // 2 + self.max_output_tokens)}}
+        result = self.stream_chat(payload, on_text)
         self.last_metrics = response_metrics(result)
         if result.get("done_reason") == "length":
-            raise ValueError("Model reached the response token limit; no partial action was executed. "
-                             "Use a smaller task or increase --max-output-tokens.")
+            raise InvalidReply("Model reached the response token limit; no partial action was executed. "
+                               "Use edit with smaller SEARCH/REPLACE blocks or a shorter answer, "
+                               "or increase --max-output-tokens.")
         try:
             return json.loads(result["message"]["content"])
         except (KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("Model returned an invalid JSON response") from exc
+            raise InvalidReply("Model returned an invalid JSON response") from exc

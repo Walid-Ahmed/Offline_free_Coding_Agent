@@ -1,4 +1,5 @@
 """Bounded UTF-8 workspace access and reviewable file writes."""
+import ast
 import difflib
 import json
 import os
@@ -21,6 +22,27 @@ def line_range(spec):
     if start < 1 or (end is not None and end < start):
         raise ValueError("Read range must be start-end with 1 <= start <= end")
     return start, end
+
+
+def python_syntax_error(name, content, before=None):
+    """Describe a syntax error a change introduces into a Python file. Parses only; never executes."""
+    if Path(name).suffix not in (".py", ".pyi"):
+        return None
+    try:
+        ast.parse(content, filename=name)
+        return None
+    except SyntaxError as exc:
+        error = exc
+    except (ValueError, RecursionError, MemoryError):
+        return None
+    if before is not None:
+        try:
+            ast.parse(before, filename=name)
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
+            return None  # Already broken before this change; do not block a repair attempt.
+    line = (error.text or "").strip()
+    return (f"Proposed {name} has a Python syntax error at line {error.lineno}: {error.msg}"
+            + (f" ({line[:120]})" if line else "") + ". Nothing was previewed or written; fix the change and try again.")
 
 
 def apply_edits(text, blocks):
