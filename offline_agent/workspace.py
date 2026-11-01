@@ -2,12 +2,62 @@
 import difflib
 import json
 import os
+import re
 from pathlib import Path
 from .exclusions import Exclusions, IgnoreConfigurationError
 
 EXCLUDED = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build",
             ".aws", ".ssh", ".codex", ".agents"}
 MAX_BYTES = 64_000
+SEARCH, DIVIDER, REPLACE = "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"
+
+
+def line_range(spec):
+    """Parse an optional read range such as 120-180 or 120; anything else means the whole file."""
+    match = re.fullmatch(r"\s*(?:lines?\s*)?(\d+)(?:\s*[-:]\s*(\d+))?\s*", spec or "", re.I)
+    if not match:
+        return None
+    start, end = int(match[1]), int(match[2]) if match[2] else None
+    if start < 1 or (end is not None and end < start):
+        raise ValueError("Read range must be start-end with 1 <= start <= end")
+    return start, end
+
+
+def apply_edits(text, blocks):
+    """Apply SEARCH/REPLACE blocks in order; each SEARCH text must match exactly once."""
+    lines = blocks.split("\n")
+    edits, index = [], 0
+
+    def marker(name, start):
+        found = next((i for i in range(start, len(lines)) if lines[i].strip() == name), None)
+        if found is None:
+            raise ValueError(f"Each edit block needs {DIVIDER} and {REPLACE} marker lines")
+        return found
+
+    while index < len(lines):
+        if not lines[index].strip():
+            index += 1
+            continue
+        if lines[index].strip() != SEARCH:
+            raise ValueError(f"Edit content must contain only {SEARCH} ... {REPLACE} blocks")
+        divider = marker(DIVIDER, index + 1)
+        end = marker(REPLACE, divider + 1)
+        edits.append(("\n".join(lines[index + 1:divider]), "\n".join(lines[divider + 1:end])))
+        index = end + 1
+    if not edits:
+        raise ValueError("Edit needs at least one SEARCH/REPLACE block")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    for number, (old, new) in enumerate(edits, 1):
+        if not old.strip():
+            raise ValueError(f"Edit block {number} has empty SEARCH text; use write to create a file")
+        old, new = old.replace("\n", newline), new.replace("\n", newline)
+        count = text.count(old)
+        if count != 1:
+            hint = ("read the file and copy the current lines exactly" if not count
+                    else "include more surrounding lines so it matches once")
+            raise ValueError(f"Edit block {number} SEARCH text matches {count} times; {hint}. No change was made.")
+        text = text.replace(old, new, 1)
+    return text
 
 
 class Workspace:
@@ -76,6 +126,25 @@ class Workspace:
         if len(raw) > MAX_BYTES or b"\0" in raw:
             raise ValueError("Only UTF-8 text files up to 64 KB can be read")
         return raw.decode("utf-8")
+
+    def page(self, name, spec="", limit=MAX_BYTES):
+        """Return (text, start, end, total) for a line range, cut at a line boundary to fit limit bytes."""
+        text = self.read(name)
+        lines = text.splitlines(keepends=True)
+        total = len(lines)
+        requested = line_range(spec)
+        if requested is None and len(text.encode()) <= limit:
+            return text, 1, max(1, total), total
+        start, end = requested or (1, None)
+        if start > total:
+            raise ValueError(f"{name} has {total} lines; request a range within 1-{total}")
+        shown, size = [], 0
+        for line in lines[start - 1:min(end or total, total)]:
+            size += len(line.encode())
+            if shown and size > limit:
+                break
+            shown.append(line)
+        return "".join(shown), start, start + len(shown) - 1, total
 
     def search(self, query, scope=""):
         """Case-sensitive literal search; return bounded, numbered UTF-8 snippets."""

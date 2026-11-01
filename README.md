@@ -55,7 +55,7 @@ After installation, you can replace `python3 -m offline_agent` with `codehaven`.
 ## LangGraph workflow
 
 ```text
-START -> model -> read, search, retrieve, write, or run_tests -> model
+START -> model -> read, search, retrieve, edit, write, or run_tests -> model
              \-> finish -> END
                     tool at action limit -> limit -> END
 ```
@@ -92,7 +92,9 @@ installations. Credentials must never be committed. See the official
 ## What v0.7 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
-- Uses structured JSON actions to read, search file contents, retrieve references, propose a complete file, run tests, or finish.
+- Uses structured JSON actions to read, search file contents, retrieve references, edit part of a file, propose a complete file, run tests, or finish.
+- Reads long files in pages. Content such as `120-180` asks for a line range. A read that would not fit in half the prompt budget returns whole lines up to that size and names the next range to request, so evidence is never silently truncated.
+- Edits existing files with exact SEARCH/REPLACE blocks, so changing a few lines of a large file costs a few output tokens instead of a full rewrite. Each SEARCH text must match exactly once. Otherwise nothing changes and the model is told why. Edits use the same diff preview and per-file confirmation as writes.
 - Runs unittest or pytest in isolated Docker containers after approval, with networking disabled, read-only project snapshots, a 30-second timeout, and bounded output.
 - Shows unified diffs before edits, with confirmation for each write.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
