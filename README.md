@@ -1,6 +1,6 @@
-# Offline Free Coding Agent
+# CodeHaven
 
-![A happy developer coding locally: offline, private, and no API fees.](docs/assets/offline-agent-banner.png)
+*Your code. Your machine. No API fees.*
 
 Version 0.7.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
@@ -48,7 +48,7 @@ python3 -m offline_agent \
   'Read the calculator module and add input validation'
 ```
 
-After installation, you can replace `python3 -m offline_agent` with `offline-agent` (on Windows, use `python -m offline_agent`). Installation downloads LangGraph and its dependencies; runtime does not require internet access.
+After installation, you can replace `python3 -m offline_agent` with `codehaven`. The existing `offline-agent` command remains supported (on Windows, use `python -m offline_agent`). Reinstall the package after updating to register the new command. Installation downloads LangGraph and its dependencies; runtime does not require internet access.
 
 ## LangGraph workflow
 
@@ -93,7 +93,7 @@ The repository selected by `--workspace` is automatically indexed for RAG. The a
 offline-agent --workspace /path/to/repo 'Explain how order validation works'
 ```
 
-**You can also add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too. Reference folders inside the workspace must be allowed by its ignore rules. If `knowledge/` is ignored (as in this repository), use an external reference library instead.
+**You can also add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. Bundled LangGraph documentation notes cover graph construction, checkpointing, and approval interrupts, with official source links. They are available to RAG automatically, offline, and are project-authored notes rather than the complete official manual. Reference folders inside the workspace must be allowed by its ignore rules. If `knowledge/` is ignored (as in this repository), use an external reference library instead.
 
 ```sh
 offline-agent --workspace /path/to/project --knowledge-base /path/to/references \

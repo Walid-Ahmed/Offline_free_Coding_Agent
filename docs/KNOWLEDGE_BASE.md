@@ -92,8 +92,13 @@ Permitted references can still be edited with the usual write approval.
 
 ## LangGraph manuals
 
-A short, project-authored LangGraph reference ships with the package and is always
-included. It is not the full official manual. To add a full manual, place text or
+Project-authored LangGraph documentation notes ship with the package and are always
+included: `langgraph.md` (CodeHaven workflow), `langgraph-graphs.md` (construction),
+`langgraph-checkpoints.md` (persistence), and `langgraph-approvals.md` (interrupts).
+Each topic includes official provenance links and a review date. These are offline
+reference notes, not the full official manual, and do not enable new agent features.
+Try asking: `codehaven 'Explain LangGraph checkpointing using the bundled references'`.
+To add a full manual, place text or
 Markdown copies that you already have permission to use in your local knowledge
 folder. Split long manuals into smaller files (one topic/page per file), each no
 larger than 64 KB. Include the manual version and source URL in the document text

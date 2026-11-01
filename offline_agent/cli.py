@@ -9,7 +9,7 @@ from .test_runner import DEFAULT_IMAGE
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=f"Offline coding agent powered by local {MODEL}")
+    parser = argparse.ArgumentParser(description=f"CodeHaven — Your code. Your machine. No API fees. Powered by local {MODEL}")
     parser.add_argument("task", nargs="?", help="Coding task in plain English")
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
