@@ -62,6 +62,10 @@ After installation, you can replace `python3 -m offline_agent` with `codehaven`.
 
 ## LangGraph workflow
 
+![How CodeHaven works: your task and local RAG passages build the prompt; the local model picks one tool per step (retrieve, search, read, edit, write, run_tests) and each result loops back until it finishes with a checked answer, all on your machine.](docs/assets/how-codehaven-works.svg)
+
+A high-resolution [PNG version](docs/assets/how-codehaven-works.png) is available for slides.
+
 ```text
 START -> model -> read, search, retrieve, edit, write, or run_tests -> model
              |-> invalid reply -> correction message -> model (once)
