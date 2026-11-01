@@ -1,91 +1,65 @@
+"""CodeHaven always runs offline: no tracing flags, clients, or env-var opt-in."""
 import contextlib
 import io
 import os
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from pathlib import Path
+from unittest.mock import patch
 
-from langchain_core.callbacks import BaseCallbackHandler
 from langsmith import get_tracing_context
+from langsmith.utils import tracing_is_enabled
 
+import offline_agent
 from offline_agent.agent import run
 from offline_agent.cli import main
 from offline_agent.workspace import Workspace
 
+TRACING_ENV = {"LANGSMITH_TRACING": "true", "LANGCHAIN_TRACING_V2": "true",
+               "LANGSMITH_API_KEY": "test-key", "LANGCHAIN_API_KEY": "test-key"}
 
-class TracingTests(unittest.TestCase):
-    def test_model_error_still_flushes_traces_without_masking_original_error(self):
-        class Model:
-            def chat(self, messages, schema):
-                raise ValueError("Model failed")
-        class FakeTracer(BaseCallbackHandler):
-            def __init__(self, **kwargs):
-                pass
-        client = Mock()
-        client.flush.side_effect = RuntimeError("Trace transport failed")
-        with tempfile.TemporaryDirectory() as root, patch(
-            "langchain_core.tracers.langchain.LangChainTracer", FakeTracer
-        ), self.assertRaisesRegex(ValueError, "Model failed"):
-            run(Model(), Workspace(root), "Explain", tracing_client=client, output=lambda _: None)
-        client.flush.assert_called_once()
 
-    def test_opt_in_enables_context_and_attaches_explicit_client(self):
-        observed = []
-        class Model:
-            def chat(self, messages, schema):
-                observed.append(get_tracing_context()["enabled"])
-                return dict(action="finish", path="", content="Done", message="Done")
-        client = Mock()
-        constructors = []
-        class FakeTracer(BaseCallbackHandler):
-            def __init__(self, **kwargs):
-                constructors.append(kwargs)
+class OfflineModel:
+    """Stands in for local Ollama and records whether tracing was active during the call."""
+    def __init__(self):
+        self.observed = []
 
-        with tempfile.TemporaryDirectory() as root, patch(
-            "langchain_core.tracers.langchain.LangChainTracer", FakeTracer
-        ):
-            run(Model(), Workspace(root), "Explain", tracing_client=client,
-                tracing_project="private-debug", output=lambda _: None)
-        self.assertEqual(observed, [True])
-        self.assertEqual(constructors, [dict(client=client, project_name="private-debug")])
-        client.flush.assert_called_once()
+    def check_model(self):
+        pass
 
-    @patch.dict(os.environ, {"LANGSMITH_API_KEY": "test-key"})
-    def test_cli_redacts_content_by_default_and_forwards_opt_in(self):
-        with tempfile.TemporaryDirectory() as root, patch("langsmith.Client") as client, \
-             patch("offline_agent.cli.Ollama"), patch("offline_agent.cli.run", return_value=0) as agent, \
+    def chat(self, messages, schema):
+        self.observed.append((get_tracing_context()["enabled"], tracing_is_enabled()))
+        return dict(action="finish", path="", content="Done", message="Done")
+
+
+class OfflineTests(unittest.TestCase):
+    def test_removed_tracing_flags_are_rejected(self):
+        for flag in ("--langsmith-tracing", "--langsmith-project=x", "--langsmith-include-content"):
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit) as exit_:
+                main([flag, "Explain"])
+            self.assertEqual(exit_.exception.code, 2)
+
+    def test_run_no_longer_accepts_a_tracing_client(self):
+        with tempfile.TemporaryDirectory() as root, self.assertRaises(TypeError):
+            run(OfflineModel(), Workspace(root), "Explain", tracing_client=object(),  # pyright: ignore[reportCallIssue]
+                output=lambda _: None)
+
+    @patch.dict(os.environ, TRACING_ENV)
+    def test_tracing_environment_cannot_enable_uploads_during_a_cli_run(self):
+        model = OfflineModel()
+        with tempfile.TemporaryDirectory() as root, \
+             patch("offline_agent.cli.Ollama", return_value=model), \
+             patch("langsmith.client.Client", side_effect=AssertionError("tracing client created")) as client, \
              contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main(["--workspace", root, "--langsmith-tracing", "Explain"]), 0)
-        client.assert_called_once_with(api_key="test-key", hide_inputs=True, hide_outputs=True)
-        self.assertIs(agent.call_args.kwargs["tracing_client"], client.return_value)
-
-    @patch.dict(os.environ, {"LANGSMITH_API_KEY": "test-key", "LANGSMITH_TRACING": "true"})
-    def test_environment_alone_does_not_construct_tracing_client(self):
-        with tempfile.TemporaryDirectory() as root, patch("langsmith.Client") as client, \
-             patch("offline_agent.cli.Ollama"), patch("offline_agent.cli.run", return_value=0) as agent, \
-             contextlib.redirect_stdout(io.StringIO()):
-            main(["--workspace", root, "Explain"])
+            # 2 only means the stub answer cites no evidence; 1 would be an error.
+            self.assertNotEqual(main(["--workspace", root, "Explain"]), 1)
+        self.assertEqual(model.observed, [(False, False)])
         client.assert_not_called()
-        self.assertIsNone(agent.call_args.kwargs["tracing_client"])
 
-    @patch.dict(os.environ, {"LANGSMITH_API_KEY": "test-key"})
-    def test_content_export_requires_separate_flag(self):
-        with tempfile.TemporaryDirectory() as root, patch("langsmith.Client") as client, \
-             patch("offline_agent.cli.Ollama"), patch("offline_agent.cli.run", return_value=0), \
-             contextlib.redirect_stdout(io.StringIO()):
-            main(["--workspace", root, "--langsmith-tracing", "--langsmith-include-content", "Explain"])
-        client.assert_called_once_with(api_key="test-key", hide_inputs=False, hide_outputs=False)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_missing_or_blank_key_warns_and_continues_without_tracing(self):
-        for key in (None, "", "   "):
-            with self.subTest(key=key), tempfile.TemporaryDirectory() as root, \
-                 patch.dict(os.environ, {} if key is None else {"LANGSMITH_API_KEY": key}, clear=True), \
-                 patch("langsmith.Client") as client, patch("offline_agent.cli.Ollama") as model, \
-                 patch("offline_agent.cli.run", return_value=0) as agent, \
-                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as error:
-                self.assertEqual(main(["--workspace", root, "--langsmith-tracing", "Explain"]), 0)
-                self.assertIn("Continuing with LangSmith tracing disabled", error.getvalue())
-                client.assert_not_called()
-                model.return_value.check_model.assert_called_once()
-                self.assertIsNone(agent.call_args.kwargs["tracing_client"])
+    def test_package_source_has_no_tracing_client_or_tracer(self):
+        package = Path(offline_agent.__file__).parent
+        for source in package.glob("*.py"):
+            text = source.read_text()
+            for banned in ("LangChainTracer", "langsmith import Client", "langsmith.Client"):
+                self.assertNotIn(banned, text, f"{source.name} references {banned}")

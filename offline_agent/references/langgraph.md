@@ -36,11 +36,10 @@ Internal tool nodes require a larger recursion allowance than the action limit.
 
 LangGraph orchestration does not require a hosted graph service or a cloud LLM.
 Our application uses a local Ollama transport for qwen2.5-coder:7b.
-By default it wraps execution in langsmith.tracing_context(enabled=False), so
-inherited tracing settings do not enable remote tracing. Explicitly passing
---langsmith-tracing enables uploads to LangSmith. Inputs and outputs are hidden
-unless --langsmith-include-content is also supplied; metadata and errors still
-leave the device. Opted-in tracing requires network access and an API key.
+It always wraps execution in langsmith.tracing_context(enabled=False), so
+inherited tracing settings such as LANGSMITH_TRACING cannot enable remote
+tracing. There is no tracing flag, tracing client, or upload path; the
+application runs entirely offline.
 
 ## Persistence and approval
 
