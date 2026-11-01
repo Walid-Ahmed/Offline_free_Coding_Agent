@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.2.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.2.1 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -51,19 +51,20 @@ After installation, you can replace `python3 -m offline_agent` with `offline-age
 ## LangGraph workflow
 
 ```text
-START -> model -> read or write -> model
+START -> model -> read, write, or run_tests -> model
              \-> finish -> END
-                    read/write at action limit -> limit -> END
+                    tool at action limit -> limit -> END
 ```
 
 The graph holds conversation messages, the current action, the action count, and the exit code in memory. It uses conditional edges to dispatch actions. Each write still requires your confirmation in `--apply` mode. The action limit counts model responses, not internal graph nodes. Graph recursion has a separate guard sized to that limit. This version does not add persistent checkpoints, saved sessions, or automatic retries of writes.
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.2 does
+## What v0.2.1 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
-- Uses structured JSON actions to read, propose a complete file, or finish.
+- Uses structured JSON actions to read, propose a complete file, run tests, or finish.
+- Runs fixed Python unittest discovery after explicit approval, with a 30-second timeout and 16 KB output cap.
 - Shows unified diffs before edits, with confirmation for each write.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
 - Rejects traversal, hidden paths, symlinks, and hard-linked write targets.
@@ -71,9 +72,29 @@ Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/
 
 Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-steps 20` for longer tasks. Exit codes: 0 finished/doctor passed, 1 error, 2 step limit, 130 interrupted. Model completion does not establish that generated code is correct.
 
+## Run project tests
+
+With your virtual environment active:
+
+```sh
+offline-agent --workspace /absolute/path/to/project 'Run the tests and explain any failures'
+```
+
+The model can request `run_tests`. The agent displays the command and working directory, then asks for approval. It uses the agent's Python interpreter to run:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+The project must have a `tests/` directory containing unittest-compatible tests (normally `test*.py`). Project dependencies must already be installed in that Python environment. No packages are downloaded by this tool, and pytest is not supported yet. Each request requires approval, independently of `--apply`; declining or reaching EOF prevents execution. Library callers must supply a `confirm_tests` callback to permit runs.
+
+The tool returns the exit code and combined stdout/stderr to the model and prints them for you. Runs time out after 30 seconds, and only the first 16,000 output bytes are retained. Ordinary subprocesses in the test process group are cleaned up. Zero discovered tests can return exit code 0; inspect the test count. Agent exit code 0 means the conversation finished, not that tests passed.
+
+**Run only trusted project tests.** Tests and their imports execute with your user permissions and inherited environment, and can modify files or access the network. This runner is not an OS sandbox and cannot confine malicious code or detached subprocesses. File-tool restrictions do not restrict test code. To guarantee offline test execution, disconnect from the network or use an externally isolated environment. The runner currently supports macOS/Linux; other agent tools remain available on Windows.
+
 ## Current limits
 
-This is a prototype for trusted local projects, not an operating-system sandbox. It does not execute commands, install dependencies, delete files, run generated tests, or roll back writes. Review changes with Git and run your tests yourself. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
+This is a prototype for trusted local projects, not an operating-system sandbox. It runs only the fixed test command described below; it cannot accept arbitrary commands, install dependencies, delete files through a tool, or roll back writes. Review changes with Git. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
 
 Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. It does not yet implement `.gitignore` rules. Conversation context accumulates within a task and can exceed small model context windows; there is no persistent memory or automatic context compaction yet. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
 

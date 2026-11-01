@@ -23,9 +23,12 @@ def main(argv=None):
             print(f"Local Ollama is ready: {MODEL}")
             return 0
         workspace = Workspace(args.workspace)
-        print(f"Workspace: {workspace.root}\nMode: {'confirm each write' if args.apply else 'preview only'}")
+        print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps,
-                   confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y")
+                   confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",
+                   confirm_tests=lambda: input(
+                       "Run project tests with your user permissions (including file and network access)? [y/N] "
+                   ).strip().lower() == "y")
     except (ValueError, OSError, EOFError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

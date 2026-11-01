@@ -45,9 +45,13 @@ Prioritize after trying v0.1 on small real repositories:
 - Add smaller patch edits with stale-content checks.
 - Benchmark `qwen2.5-coder:7b` on representative coding tasks and document tested hardware.
 
-## Version 0.3: verification loop
+## Version 0.2.1: approved unittest execution
 
-Add explicitly approved test commands in an OS-isolated runner, bounded output and timeouts, failure feedback, and clear test evidence. Command execution requires a separate security design; a shell allowlist alone is insufficient. Keep network disabled for the runner.
+Added a run_tests graph node using fixed unittest discovery under tests/, per-run approval, a 30-second timeout, bounded 16 KB output, and POSIX process-group cleanup. Results feed back into the model conversation. This is explicitly limited to trusted projects on macOS/Linux and is not an isolated runner; test code retains user file/network permissions. Model selection remains fixed to qwen2.5-coder:7b.
+
+## Future: isolated verification loop
+
+Add explicitly approved test commands in an OS-isolated runner, bounded output and timeouts, failure feedback, and clear test evidence. General command execution and confinement of untrusted tests require a separate security design; a fixed command alone is insufficient. Keep network disabled for the runner.
 
 ## Later versions
 
@@ -62,3 +66,5 @@ Local validation on November 1, 2026: all 9 automated tests passed on Python 3.1
 Current model policy: use only `qwen2.5-coder:7b`. The earlier 14b smoke test above is historical and does not validate the current 7b configuration. The CLI no longer accepts a model-selection option.
 
 Version 0.2 validation on November 1, 2026: all 21 tests passed on Python 3.13.3 with LangGraph 1.2.19, and `pip check` reported no broken requirements. A real `qwen2.5-coder:7b` run read a disposable Python file and finished with an explanation in two model actions. Tests also cover the 30-action boundary, approved writes at the limit, and disabled tracing with inherited tracing environment flags. Other Python versions remain covered by the CI configuration rather than local verification.
+
+Version 0.2.1 validation: all 29 automated tests passed on Python 3.13.3. The real local qwen2.5-coder:7b model requested run_tests on a disposable unittest project, received exit code 0 with one passing test, and reported that result. Runner tests cover failures, timeouts, output truncation, missing test directories, rejected custom commands, denied approval, and result feedback into the graph.
