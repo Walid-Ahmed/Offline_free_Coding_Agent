@@ -4,7 +4,7 @@
 
 ![CodeHaven: working locally, with offline coding, privacy, and no API fees.](docs/assets/codehaven-working-preview.png)
 
-Version 0.7.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.7.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud inference, automatic downloads, or tracing by default. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. Optional LangSmith tracing requires an explicit flag and sends run data off-device.
 
 ## Quick start
 
@@ -62,7 +62,29 @@ START -> model -> read, search, retrieve, write, or run_tests -> model
 
 The graph holds conversation messages, the current action, the action count, and the exit code in memory. It uses conditional edges to dispatch actions. Each write still requires your confirmation in `--apply` mode. The action limit counts model responses, not internal graph nodes. Graph recursion has a separate guard sized to that limit. This version does not add persistent checkpoints, saved sessions, or automatic retries of writes.
 
-Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
+Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing stays disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if enabled in the parent environment, unless you explicitly opt in.
+
+## Optional LangSmith tracing
+
+`--langsmith-tracing` uploads graph/node timings, status, metadata and errors to
+LangSmith. This mode needs network access and a LangSmith account; service limits
+or charges may apply. Inference still uses only local `qwen2.5-coder:7b`, and no
+internet-browsing tool is added. Without the flag, no tracing client is created.
+
+Set `LANGSMITH_API_KEY` securely in your terminal environment, then run:
+
+```sh
+codehaven --langsmith-tracing --langsmith-project codehaven \
+  --workspace /path/to/project 'Explain the project'
+```
+
+Inputs and outputs are hidden by default. Metadata and error messages are still
+uploaded and can contain sensitive information; this is not a zero-disclosure mode.
+To debug the model's actual prompts, tool arguments, retrieved code and responses,
+also pass `--langsmith-include-content`. Only enable it for material you intend to
+share with LangSmith. The SDK honors `LANGSMITH_ENDPOINT` for regional/self-hosted
+installations. Credentials must never be committed. See the official
+[data masking guide](https://docs.langchain.com/langsmith/mask-inputs-outputs).
 
 ## What v0.7 does
 

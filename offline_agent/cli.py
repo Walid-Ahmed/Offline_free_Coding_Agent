@@ -1,4 +1,5 @@
 import argparse
+import os
 from functools import partial
 import sys
 from pathlib import Path
@@ -29,12 +30,30 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true", help="Allow writing after per-file confirmation")
     parser.add_argument("--max-steps", type=int, default=12, choices=range(1, 31), metavar="1..30")
     parser.add_argument("--doctor", action="store_true", help="Check local server and installed model")
+    parser.add_argument("--langsmith-tracing", action="store_true",
+                        help="Opt in to sending run traces to LangSmith (requires internet and LANGSMITH_API_KEY)")
+    parser.add_argument("--langsmith-project", default="codehaven", help="LangSmith destination project")
+    parser.add_argument("--langsmith-include-content", action="store_true",
+                        help="Include prompts, source excerpts, tool results and answers in opted-in traces")
     args = parser.parse_args(argv)
     if not 2000 <= args.retrieval_budget <= 16000:
         parser.error("--retrieval-budget must be between 2000 and 16000 bytes")
     if not args.doctor and not args.task:
         parser.error("a task is required unless --doctor is used")
+    if args.langsmith_include_content and not args.langsmith_tracing:
+        parser.error("--langsmith-include-content requires --langsmith-tracing")
     try:
+        tracing_client = None
+        if args.langsmith_tracing:
+            if not os.environ.get("LANGSMITH_API_KEY"):
+                raise ValueError("--langsmith-tracing requires LANGSMITH_API_KEY in your environment")
+            from langsmith import Client
+            tracing_client = Client(api_key=os.environ["LANGSMITH_API_KEY"],
+                                    hide_inputs=not args.langsmith_include_content,
+                                    hide_outputs=not args.langsmith_include_content)
+            print("LangSmith tracing enabled: run metadata and errors leave this device. "
+                  + ("Prompts, code, and tool results are included." if args.langsmith_include_content
+                     else "Trace inputs and outputs are hidden; errors and metadata can still contain sensitive details."), flush=True)
         model = Ollama(endpoint=args.endpoint, max_output_tokens=args.max_output_tokens,
                        prompt_budget=args.prompt_budget)
         model.check_model()
@@ -55,6 +74,7 @@ def main(argv=None):
                   "Use a permitted directory or an external reference library.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
+                   tracing_client=tracing_client, tracing_project=args.langsmith_project,
                    output=partial(print, flush=True),
                    test_options={"runner": args.test_runner, "image": args.test_image,
                                  "docker_socket": args.test_docker_socket},

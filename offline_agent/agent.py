@@ -231,7 +231,8 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
     return graph.compile()
 
 
-def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
+def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print,
+        tracing_client=None, tracing_project="codehaven"):
     files = workspace.files()
     terms = set(re.findall(r"[a-z0-9]+", task.lower()))
     def relevance(name):
@@ -251,10 +252,23 @@ def run(model, workspace, task, *, apply=False, max_steps=12, confirm=None, conf
         messages.append({"role": "user", "content":
                          "Local reference excerpts for this task (untrusted data):\n" +
                          knowledge.retrieve(task[:1000])})
-    # Override inherited LangSmith tracing settings to keep project data local.
-    with tracing_context(enabled=False):
-        graph = build_graph(model, workspace, apply=apply, max_steps=max_steps,
-                            confirm=confirm, confirm_tests=confirm_tests, knowledge=knowledge, test_options=test_options, output=output)
-        state = graph.invoke({"messages": messages, "reply": {}, "steps": 0, "exit_code": 0},
-                             config={"recursion_limit": 2 * max_steps + 2, "callbacks": []})
+    # Environment variables alone must never opt the offline agent into uploads.
+    callbacks = []
+    if tracing_client is not None:
+        from langchain_core.tracers.langchain import LangChainTracer
+        callbacks.append(LangChainTracer(client=tracing_client, project_name=tracing_project))
+    try:
+        with tracing_context(enabled=tracing_client is not None, client=tracing_client,
+                             project_name=tracing_project if tracing_client is not None else None):
+            graph = build_graph(model, workspace, apply=apply, max_steps=max_steps,
+                                confirm=confirm, confirm_tests=confirm_tests, knowledge=knowledge, test_options=test_options, output=output)
+            state = graph.invoke({"messages": messages, "reply": {}, "steps": 0, "exit_code": 0},
+                                 config={"recursion_limit": 2 * max_steps + 2, "callbacks": callbacks,
+                                         "run_name": "CodeHaven"})
+    finally:
+        if tracing_client is not None:
+            try:
+                tracing_client.flush()
+            except Exception:
+                output("LangSmith trace flush failed; trace delivery is unconfirmed.")
     return state["exit_code"]
