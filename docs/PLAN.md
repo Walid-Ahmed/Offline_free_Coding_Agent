@@ -40,7 +40,7 @@ Implemented a typed in-memory StateGraph with model, read, write, and limit node
 Prioritize after trying v0.1 on small real repositories:
 
 - Respect `.gitignore` and user include/exclude rules.
-- Add focused search, context budgeting, and recovery from malformed model output.
+- Add context budgeting and recovery from malformed model output (literal content search shipped in v0.2.2).
 - Add multi-file proposals, atomic writes, backups, and rollback.
 - Add smaller patch edits with stale-content checks.
 - Benchmark `qwen2.5-coder:7b` on representative coding tasks and document tested hardware.
@@ -68,3 +68,9 @@ Current model policy: use only `qwen2.5-coder:7b`. The earlier 14b smoke test ab
 Version 0.2 validation on November 1, 2026: all 21 tests passed on Python 3.13.3 with LangGraph 1.2.19, and `pip check` reported no broken requirements. A real `qwen2.5-coder:7b` run read a disposable Python file and finished with an explanation in two model actions. Tests also cover the 30-action boundary, approved writes at the limit, and disabled tracing with inherited tracing environment flags. Other Python versions remain covered by the CI configuration rather than local verification.
 
 Version 0.2.1 validation: all 29 automated tests passed on Python 3.13.3. The real local qwen2.5-coder:7b model requested run_tests on a disposable unittest project, received exit code 0 with one passing test, and reported that result. Runner tests cover failures, timeouts, output truncation, missing test directories, rejected custom commands, denied approval, and result feedback into the graph.
+
+## Version 0.2.2: literal file content search
+
+Added a read-only search graph node and scoped Workspace.search. Model arguments reuse content for the query and path for optional file/directory scope. Search is literal and case-sensitive, bounded to 1,000 candidate files, 50 matching lines, and 16 KB of JSON, using existing workspace path/read restrictions. Snippets carry relative paths and 1-based line numbers. No external search program or dependency is needed.
+
+Validation: all 40 automated tests passed on Python 3.13.3, including literal matching, scope, excluded paths, binary/encoding handling, snippets, candidate/result limits, and graph feedback. A live local qwen2.5-coder:7b run called search and correctly reported orders.py at line 1 in a disposable project.

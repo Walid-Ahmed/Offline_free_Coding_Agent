@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.2.1 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.2.2 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -51,7 +51,7 @@ After installation, you can replace `python3 -m offline_agent` with `offline-age
 ## LangGraph workflow
 
 ```text
-START -> model -> read, write, or run_tests -> model
+START -> model -> read, search, write, or run_tests -> model
              \-> finish -> END
                     tool at action limit -> limit -> END
 ```
@@ -60,10 +60,10 @@ The graph holds conversation messages, the current action, the action count, and
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.2.1 does
+## What v0.2.2 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
-- Uses structured JSON actions to read, propose a complete file, run tests, or finish.
+- Uses structured JSON actions to read, search file contents, propose a complete file, run tests, or finish.
 - Runs fixed Python unittest discovery after explicit approval, with a 30-second timeout and 16 KB output cap.
 - Shows unified diffs before edits, with confirmation for each write.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
@@ -71,6 +71,16 @@ Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/
 - Connects only to numeric HTTP loopback endpoints, with proxies and redirects disabled.
 
 Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-steps 20` for longer tasks. Exit codes: 0 finished/doctor passed, 1 error, 2 step limit, 130 interrupted. Model completion does not establish that generated code is correct.
+
+## Search file contents
+
+```sh
+offline-agent --workspace /absolute/path/to/project 'Search for validate_order and explain where it is used'
+```
+
+The model can call `search` with the literal query in `content` and an optional relative file or directory in `path`. An empty path searches the workspace. Search is read-only and needs no approval. Matching is case-sensitive, single-line, and literal (no regex); queries must be nonblank and at most 256 characters.
+
+Results contain relative paths, 1-based line numbers, and up to 320 characters of text around the first match on each matching line. Search returns at most 50 matching lines and 16,000 bytes of JSON. It considers up to 1,000 eligible files per scope and skips hidden/excluded paths, symlinks, files over 64 KB, binary data, unreadable files, and invalid UTF-8. Narrow the scope when a limit is reported. `files_searched` and `files_skipped` describe attempted candidates; `limit_reached` and `candidate_limit_reached` flag potentially incomplete results. A no-match result only describes the files actually searched. Search does not yet respect `.gitignore`.
 
 ## Run project tests
 
