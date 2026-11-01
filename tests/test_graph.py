@@ -2,6 +2,7 @@
 import contextlib
 import io
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,21 @@ class GraphTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.ws = Workspace(self.temp.name)
+
+    def test_wait_message_precedes_model_call_and_reporter_stops_on_error(self):
+        output = []
+        threads_before = set(threading.enumerate())
+
+        class Model:
+            def chat(self, messages, schema):
+                self_check = output[-1]
+                if "Waiting for the local model" not in self_check:
+                    raise AssertionError("Missing progress before model call")
+                raise ValueError("Local model timed out")
+
+        with self.assertRaisesRegex(ValueError, "Local model timed out"):
+            run(Model(), self.ws, "Explain", output=output.append)
+        self.assertEqual(set(threading.enumerate()), threads_before)
 
     def test_read_result_reaches_next_model_call(self):
         Path(self.temp.name, "code.py").write_text("value = 42\n")

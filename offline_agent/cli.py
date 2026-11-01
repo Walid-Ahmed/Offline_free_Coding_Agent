@@ -1,4 +1,5 @@
 import argparse
+from functools import partial
 import sys
 from pathlib import Path
 from .knowledge import KnowledgeBase
@@ -49,6 +50,7 @@ def main(argv=None):
                   "Use a permitted directory or an external reference library.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
+                   output=partial(print, flush=True),
                    test_options={"runner": args.test_runner, "image": args.test_image,
                                  "docker_socket": args.test_docker_socket},
                    confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",

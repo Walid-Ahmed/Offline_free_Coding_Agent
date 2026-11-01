@@ -1,5 +1,7 @@
 """Local coding workflow orchestrated by a LangGraph StateGraph."""
 import json
+import threading
+import time
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -54,7 +56,22 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         raise ValueError("max_steps must be between 1 and 30")
 
     def call_model(state: AgentState):
-        reply = model.chat(state["messages"], SCHEMA)
+        step = state["steps"] + 1
+        output(f"\n[{step}/{max_steps}] Waiting for the local model (loading and prompt processing can take time)...")
+        started = time.monotonic()
+        stopped = threading.Event()
+
+        def progress():
+            while not stopped.wait(15):
+                output(f"Still waiting for the local model: {int(time.monotonic() - started)}s elapsed.")
+
+        reporter = threading.Thread(target=progress, daemon=True)
+        reporter.start()
+        try:
+            reply = model.chat(state["messages"], SCHEMA)
+        finally:
+            stopped.set()
+            reporter.join()
         if (not isinstance(reply, dict) or set(reply) != set(SCHEMA["required"])
                 or any(not isinstance(reply[k], str) for k in SCHEMA["required"])
                 or reply["action"] not in ("read", "search", "retrieve", "write", "run_tests", "finish")):
