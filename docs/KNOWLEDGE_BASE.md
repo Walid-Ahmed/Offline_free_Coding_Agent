@@ -110,7 +110,8 @@ unpublished.
 At startup, the agent reads eligible repository and reference files and builds an in-memory BM25
 keyword index. It breaks documents into passages of up to 30 lines / about 1,800
 characters and ranks them by query term overlap and rarity. It returns up to four
-passages with citations and a 16 KB JSON cap. There are no embeddings or semantic
+keyword-matched passages plus up to four Python dependency passages with citations
+and a shared 16 KB JSON cap. There are no embeddings or semantic
 vector search, so queries using the document's actual terminology work best.
 
 The index is rebuilt for each new task and after approved agent writes. External
@@ -127,3 +128,44 @@ not follow embedded commands. This is guidance rather than a prompt-injection
 security boundary. Existing write/test approvals still apply. Project test code
 retains the previously documented user/network permissions; RAG itself performs
 no network requests.
+
+## Dependency-aware Python retrieval
+
+Python repository files (`.py` and `.pyi`) are parsed with Python's standard AST
+parser at indexing time. No project module is imported or executed. When a
+keyword-matched passage comes from a Python file, retrieval follows its statically
+resolved local imports, even if the dependency has no query keyword overlap.
+
+For example, a query matching `orders.py` can return a definition from
+`pricing.py` imported with `from pricing import calculate_total`. Absolute imports,
+relative imports (`from .pricing ...`, `from ..models ...`), aliases, local package
+initializers, and common repository-root / `src/` layouts are supported. A sibling
+module is also considered as a fallback for script-style layouts. Resolution only
+considers indexed repository paths and never searches installed packages, the
+network, or arbitrary files elsewhere on the device.
+
+For a named import, the retriever prefers the passage containing the imported
+top-level function, class, or simple assigned constant. If no such definition can
+be found, it uses the dependency's first passage. One passage per dependency edge
+is selected; importing several symbols does not guarantee that every definition
+or entire function body fits. Module imports also default to the first passage.
+
+Expansion follows up to two hops from the keyword-matched files, adding at most
+four dependency passages. Cycles and repeated passages are deduplicated. The total
+keyword and dependency output shares the 16 KB JSON budget. Dependency results
+have `kind: dependency`, `via` (the importing source), and `depth`; normal results
+have `kind: match`. `dependency_limit_reached` reports depth/count/output limits;
+`dependency_parse_failures` counts Python files that could not be parsed. A syntax
+error does not prevent that file's text from participating in keyword retrieval.
+
+This is static import assistance, not a complete Python interpreter or call graph.
+Conditional/function-local imports may be included even when not executed. Custom
+`sys.path`, dynamic imports, star-import name resolution, runtime monkey-patching,
+ambiguous package layouts, reverse caller lookup, and third-party dependencies are
+not resolved. Other languages retain keyword-only retrieval. Syntax unsupported by
+the Python version running the agent is skipped by dependency analysis. Index
+limits may omit import targets; absence of a dependency passage is not evidence
+that no dependency exists. Use search/read for missing context.
+
+The dependency graph refreshes with the local index after approved writes and on
+each new task. It does not add internet access or another model.

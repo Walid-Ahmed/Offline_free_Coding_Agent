@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.3.1 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.4.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -60,7 +60,7 @@ The graph holds conversation messages, the current action, the action count, and
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.3 does
+## What v0.4 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
 - Uses structured JSON actions to read, search file contents, retrieve references, propose a complete file, run tests, or finish.
@@ -74,7 +74,7 @@ Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-st
 
 ## Local reference knowledge base (RAG)
 
-The repository selected by `--workspace` is automatically indexed for RAG. The agent retrieves relevant source code, README/documentation, and common configuration/build files before answering, with citations such as `repo/src/orders.py:1-25`. No separate indexing command is needed.
+The repository selected by `--workspace` is automatically indexed for RAG. The agent retrieves relevant source code, README/documentation, and common configuration/build files before answering, with citations such as `repo/src/orders.py:1-25`. No separate indexing command is needed. For Python, retrieval also follows local imports up to two hops and adds relevant dependency passages, even when they do not match the question keywords.
 
 ```sh
 offline-agent --workspace /path/to/repo 'Explain how order validation works'
@@ -88,6 +88,12 @@ offline-agent --workspace /path/to/project --knowledge-base /path/to/references 
 ```
 
 The agent retrieves relevant passages automatically and can call `retrieve` for more, with source and line citations. Indexing and retrieval run entirely on your device using BM25 keyword ranking. Startup reports the repository-file count and warns if index limits were reached. The index refreshes after an approved agent write and at the start of each new task. No extra model, internet access, embeddings, or vector database is needed. See [how to add manuals and your own references](docs/KNOWLEDGE_BASE.md) for supported formats, limits, and examples.
+
+## Dependency-aware Python retrieval
+
+If `orders.py` imports a helper from `pricing.py`, retrieving the order code can now include the pricing definition too. Static parsing supports absolute/relative imports, aliases, package initializers, and common `src/` layouts without importing or running project code. Results identify dependency passages and the importing file.
+
+Up to four keyword matches and four additional dependency passages share the existing 16 KB output budget. Expansion follows at most two import hops and only uses already indexed files. Dynamic imports, third-party packages, full runtime/call-graph analysis, and dependency expansion for other languages are not supported yet. See [retrieval details](docs/KNOWLEDGE_BASE.md#dependency-aware-python-retrieval).
 
 ## Search file contents
 

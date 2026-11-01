@@ -98,3 +98,21 @@ An earlier live run repeated actions until its limit; the successful run also
 proposed an unnecessary preview edit before finishing. Prompt guidance now tells
 the model to finish questions from available context and reserve writes for change
 requests. These smoke tests do not establish general model reliability.
+
+## Version 0.4: dependency-aware Python retrieval
+
+Added static AST-based local import resolution over already indexed repository
+Python files. Retrieval expands keyword matches with up to four linked dependency
+passages across two hops, selecting named-definition passages when available.
+Imports are not executed. Cycles are deduplicated and the existing shared 16 KB
+context budget remains. Syntax errors and expansion limits are reported in result
+metadata. Other languages and dynamic/runtime dependency analysis remain out of
+scope for this version.
+
+Validation: all 73 automated tests passed on Python 3.13.3. New coverage includes
+absolute/relative imports, aliases, src layouts, package initializers, definition
+passage selection, cycles, two-hop and context limits, syntax failures, refresh,
+and excluded targets. Static analysis never imports project modules or opens
+network connections. A live local qwen2.5-coder:7b test correctly answered that
+checkout_total(10) returns 17 using the imported fee function, and cited
+repo/pricing.py:1-2.
