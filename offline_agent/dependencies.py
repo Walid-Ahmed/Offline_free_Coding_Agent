@@ -8,6 +8,7 @@ class PythonDependencies:
     def __init__(self, files):
         self.edges = {}
         self.definitions = {}
+        self.spans = {}
         self.parse_failures = 0
         self.files = files
         for name, text in files.items():
@@ -26,6 +27,12 @@ class PythonDependencies:
                         if isinstance(target, ast.Name):
                             definitions[target.id] = node.lineno
             self.definitions[name] = definitions
+            self.spans[name] = [
+                {"name": node.name, "start": min([node.lineno] +
+                 [d.lineno for d in node.decorator_list]), "end": node.end_lineno}
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            ]
             found = defaultdict(set)
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

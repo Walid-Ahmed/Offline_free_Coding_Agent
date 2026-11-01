@@ -12,11 +12,15 @@ def main(argv=None):
     parser.add_argument("task", nargs="?", help="Coding task in plain English")
     parser.add_argument("--workspace", default=".")
     parser.add_argument("--knowledge-base", help="Local reference directory; defaults to workspace/knowledge")
+    parser.add_argument("--retrieval-budget", type=int, default=16000, metavar="BYTES",
+                        help="Retrieval JSON budget in UTF-8 bytes (2000..16000; default 16000)")
     parser.add_argument("--endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--apply", action="store_true", help="Allow writing after per-file confirmation")
     parser.add_argument("--max-steps", type=int, default=12, choices=range(1, 31), metavar="1..30")
     parser.add_argument("--doctor", action="store_true", help="Check local server and installed model")
     args = parser.parse_args(argv)
+    if not 2000 <= args.retrieval_budget <= 16000:
+        parser.error("--retrieval-budget must be between 2000 and 16000 bytes")
     if not args.doctor and not args.task:
         parser.error("a task is required unless --doctor is used")
     try:
@@ -28,7 +32,7 @@ def main(argv=None):
         workspace = Workspace(args.workspace)
         references = Path(args.knowledge_base).expanduser() if args.knowledge_base else workspace.root / "knowledge"
         knowledge = KnowledgeBase(references if args.knowledge_base or references.exists() else None,
-                                  workspace=workspace)
+                                  workspace=workspace, context_budget=args.retrieval_budget)
         print(f"Knowledge base: {knowledge.documents_by_source['repo']} repository files, "
               f"{knowledge.documents_by_source['user']} user references, {len(knowledge.entries)} chunks. "
               "Add your own .md, .txt, or .rst references to " + str(references))

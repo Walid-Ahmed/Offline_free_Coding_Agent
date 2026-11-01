@@ -116,3 +116,24 @@ and excluded targets. Static analysis never imports project modules or opens
 network connections. A live local qwen2.5-coder:7b test correctly answered that
 checkout_total(10) returns 17 using the imported fee function, and cited
 repo/pricing.py:1-2.
+
+## Version 0.5: complete symbols, context allocation, and JS/TS imports
+
+Added local Tree-sitter JS/TS parsing for relative ES imports/re-exports and literal
+require calls, source-extension/index resolution, and named/default definition
+ranges. Python AST ranges include decorators. Retrieval prefers complete symbols,
+marks partial fallbacks, considers file diversity, reserves dependency space,
+continues after oversized candidates, and exposes a configurable 2–16 KB byte
+budget with actual-size metadata. Multiple imported definitions can be included.
+The existing two-hop/four-dependency limits and local-only 7b model remain.
+
+Validation: all 90 tests passed on Python 3.13.3, covering JS/TS imports, re-exports,
+JSX/TSX, cycles, parser failures, complete decorated functions, long imported
+functions, multiple imported symbols, budget limits/fallbacks, diversity, and CLI
+configuration. Editable installation and pip check passed. Local-only parser
+versions tested: tree-sitter 0.25.2, JavaScript grammar 0.25.0, TypeScript grammar
+0.23.2. A two-file TypeScript retrieval included the full imported function across
+40+ lines within a 6000-byte budget. The live local 7b model eventually answered
+17, but first proposed an unnecessary edit in preview mode and misstated a loop
+count in its explanation. No files were written. Retrieval validation does not
+establish reliable action selection or fully accurate generated explanations.

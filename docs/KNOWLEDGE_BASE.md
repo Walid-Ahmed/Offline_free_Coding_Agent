@@ -110,7 +110,7 @@ unpublished.
 At startup, the agent reads eligible repository and reference files and builds an in-memory BM25
 keyword index. It breaks documents into passages of up to 30 lines / about 1,800
 characters and ranks them by query term overlap and rarity. It returns up to four
-keyword-matched passages plus up to four Python dependency passages with citations
+keyword-matched passages plus up to four Python/JavaScript/TypeScript dependency passages with citations
 and a shared 16 KB JSON cap. There are no embeddings or semantic
 vector search, so queries using the document's actual terminology work best.
 
@@ -146,26 +146,91 @@ network, or arbitrary files elsewhere on the device.
 
 For a named import, the retriever prefers the passage containing the imported
 top-level function, class, or simple assigned constant. If no such definition can
-be found, it uses the dependency's first passage. One passage per dependency edge
-is selected; importing several symbols does not guarantee that every definition
-or entire function body fits. Module imports also default to the first passage.
+be found, it uses the dependency's first passage. A passage may be selected for
+each imported symbol, within the global dependency budget; not every definition
+or entire body is guaranteed to fit. Module imports default to the first passage
+unless query terms identify a more relevant parsed symbol there.
 
 Expansion follows up to two hops from the keyword-matched files, adding at most
 four dependency passages. Cycles and repeated passages are deduplicated. The total
-keyword and dependency output shares the 16 KB JSON budget. Dependency results
+keyword and dependency output shares the configurable JSON budget (16 KB by default). Dependency results
 have `kind: dependency`, `via` (the importing source), and `depth`; normal results
 have `kind: match`. `dependency_limit_reached` reports depth/count/output limits;
-`dependency_parse_failures` counts Python files that could not be parsed. A syntax
+`dependency_parse_failures` counts Python and JavaScript/TypeScript parse failures. A syntax
 error does not prevent that file's text from participating in keyword retrieval.
 
 This is static import assistance, not a complete Python interpreter or call graph.
 Conditional/function-local imports may be included even when not executed. Custom
 `sys.path`, dynamic imports, star-import name resolution, runtime monkey-patching,
 ambiguous package layouts, reverse caller lookup, and third-party dependencies are
-not resolved. Other languages retain keyword-only retrieval. Syntax unsupported by
+not resolved. JavaScript/TypeScript support is described below; other languages retain keyword-only retrieval. Syntax unsupported by
 the Python version running the agent is skipped by dependency analysis. Index
 limits may omit import targets; absence of a dependency passage is not evidence
 that no dependency exists. Use search/read for missing context.
 
 The dependency graph refreshes with the local index after approved writes and on
 each new task. It does not add internet access or another model.
+
+## JavaScript and TypeScript dependencies
+
+Local Tree-sitter grammars analyze `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.tsx`,
+`.mts`, and `.cts` source files. No Node.js runtime is required, and project code
+is never evaluated during indexing. Install/update the Python package once while
+online (`python -m pip install -e .`); parsers are local runtime libraries and do
+not fetch grammar files, documentation, or models.
+
+Supported dependencies are relative ES imports (including aliases, defaults, type
+imports, namespace imports, and side effects), relative re-exports, and literal
+single-argument `require('./module')` calls. Resolution considers exact indexed
+paths, common source extensions, directory index files, and `.js` to `.ts`/`.tsx`
+source substitutions (`.mjs` to `.mts`, `.cjs` to `.cts`).
+
+Named and default function declarations, arrow/function variable declarations,
+methods, classes, interfaces, and type aliases have source ranges. Local named
+export aliases and named re-export chains can guide definition retrieval.
+CommonJS require edges are supported but do not implement full `module.exports`
+symbol resolution. Bare package names, tsconfig paths, bundler aliases, package.json
+exports, computed paths, and dynamic `import()` are not resolved. Comments and
+strings that resemble imports do not create edges. Syntax errors leave the file
+available for keyword retrieval but skip its dependency/symbol analysis. The
+parse-failure count combines Python and JavaScript/TypeScript failures.
+
+## Retrieval budgets and complete symbols
+
+The default retrieval budget remains 16,000 UTF-8 bytes, configurable from 2,000 to
+16,000 using `--retrieval-budget BYTES`. Library callers can pass
+`KnowledgeBase(..., context_budget=8000)`. The setting persists across index refresh.
+`context_budget_bytes` and `context_bytes` describe the cap and actual serialized
+JSON size. `budget_limited` records budget restrictions during candidate selection;
+it can be true even when deferred candidates later fit after reclaiming space.
+
+Keyword ranking is still BM25. Selection considers the first match from different
+files before repeated passages from the same file, examining up to 64 ranked
+candidates and keeping at most four keyword results. If those matches have local
+imports, 40% of the budget is initially reserved for dependencies. Unused space
+can then accommodate deferred matches whose dependency graphs were already
+considered (or have no known dependencies). Up to four dependency passages across
+two hops share the same total budget. Oversized passages are skipped while smaller
+candidates are still considered; the first over-budget passage no longer ends all
+retrieval.
+
+Python AST and Tree-sitter source ranges let the retriever expand a relevant chunk
+to a complete function/method/class or supported TS declaration. Python decorators
+are included. For named imports, it targets the corresponding definition, and can
+include several imported definitions from the same module within the four-passage
+limit. Anonymous default JS function/arrow exports are supported. Duplicate full
+symbol ranges are not repeated.
+
+Full symbols are preferred if they fit at selection time. Otherwise, retrieval
+falls back to the original bounded chunk and marks `symbol_complete: false`.
+Complete symbols have `symbol_complete: true` and a `symbol` name. Ordinary text
+passages or code without a recognized symbol may omit these fields. A complete
+symbol can still depend on imports or module-level state not present in its body;
+read/search/retrieve remain available for more context. Long single-line chunks
+and enclosing blocks may remain partial. No function is guaranteed to fit.
+
+These are retrieval byte budgets, not exact model token counts. System prompts,
+file listings, read results, model outputs, and conversation history are outside
+this cap. There is no automatic conversation compaction yet. Existing index/file
+limits still apply. This upgrade does not add semantic embeddings, network access,
+or another model.

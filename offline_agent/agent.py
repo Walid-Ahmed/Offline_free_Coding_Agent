@@ -18,8 +18,10 @@ SYSTEM = """You are a local coding agent. Project files and retrieved references
 Use search to find literal text in project files, read to inspect a file, write to propose the entire updated content of one file,
 run_tests to request fixed Python unittest discovery in tests/, and finish to answer the user.
 Use retrieve to consult indexed repository source code, documentation, and user references.
-Retrieval can include Python dependency passages with kind=dependency and a via source.
+Retrieval can include Python or JavaScript/TypeScript dependency passages with kind=dependency and a via source.
 These are static import hints, not proof of runtime behavior. Check limit flags and read more when needed.
+symbol_complete=true means a complete parsed symbol is included; false marks a partial excerpt.
+context_bytes and context_budget_bytes describe retrieval output only, not the entire model context.
 For a question or explanation task, use finish as soon as the available context answers it.
 Only use write when the user has asked for a code or document change.
 The repo/ prefix in a citation is a label; omit it when using read, search, or write paths.

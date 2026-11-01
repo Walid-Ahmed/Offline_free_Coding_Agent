@@ -7,9 +7,10 @@ from pathlib import Path
 
 from .workspace import Workspace
 from .dependencies import PythonDependencies
+from .javascript import JS_EXTENSIONS, JavaScriptDependencies
 
 EXTENSIONS = {".md", ".txt", ".rst"}
-CODE_EXTENSIONS = EXTENSIONS | {
+CODE_EXTENSIONS = EXTENSIONS | JS_EXTENSIONS | {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
     ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt",
     ".kts", ".scala", ".sh", ".bash", ".zsh", ".ps1", ".sql", ".html",
@@ -44,7 +45,11 @@ def chunks(text):
 
 
 class KnowledgeBase:
-    def __init__(self, directory=None, *, workspace=None):
+    def __init__(self, directory=None, *, workspace=None, context_budget=16_000):
+        if not 2000 <= context_budget <= 16_000:
+            raise ValueError("Retrieval budget must be between 2000 and 16000 bytes")
+        self.context_budget = context_budget
+        self.source_texts = {}
         self.directory = directory
         self.workspace_root = workspace.root if isinstance(workspace, Workspace) else workspace
         self.documents = 0
@@ -64,7 +69,7 @@ class KnowledgeBase:
             roots.append(("repo", self.workspace_root, CODE_EXTENSIONS))
         total_bytes = 0
         seen = set()
-        python_files = {}
+        code_files = {}
         for label, root, extensions in roots:
             workspace = Workspace(root)
             names = workspace.files()
@@ -92,8 +97,9 @@ class KnowledgeBase:
                 self.documents += 1
                 self.documents_by_source[label] += 1
                 seen.add(identity)
-                if label == "repo" and Path(name).suffix in {".py", ".pyi"}:
-                    python_files[name] = text
+                if label == "repo":
+                    self.source_texts["repo/" + name] = text
+                    code_files[name] = text
                 for start, end, passage in chunks(text):
                     counts = Counter(tokens(passage))
                     if not counts:
@@ -107,14 +113,43 @@ class KnowledgeBase:
                     self.frequencies.update(counts.keys())
         self.average_length = (sum(e["length"] for e in self.entries) / len(self.entries)
                                if self.entries else 1)
-        self.dependencies = PythonDependencies(python_files)
+        self.dependencies = PythonDependencies({name: text for name, text in code_files.items()
+                                                if Path(name).suffix in {".py", ".pyi"}})
+        js = JavaScriptDependencies(code_files)
+        self.dependencies.edges.update(js.edges)
+        self.dependencies.definitions.update(js.definitions)
+        self.dependencies.spans.update(js.spans)
+        self.dependencies.parse_failures += js.parse_failures
         self.passages_by_source = {}
         for entry in self.entries:
             self.passages_by_source.setdefault(entry["source"], []).append(entry)
 
     def refresh(self):
         """Rebuild the bounded local snapshot after an agent-approved write."""
-        self.__init__(self.directory, workspace=self.workspace_root)
+        self.__init__(self.directory, workspace=self.workspace_root, context_budget=self.context_budget)
+
+    def _expanded(self, entry, terms, definition_line=None):
+        """Prefer complete syntactic symbols over arbitrary line chunks."""
+        source = entry["source"]
+        spans = self.dependencies.spans.get(source.removeprefix("repo/"), [])
+        lines = self.source_texts.get(source, "").splitlines()
+        choices = []
+        for span in spans:
+            if definition_line is not None:
+                relevant = span["start"] <= definition_line <= span["end"]
+            else:
+                relevant = span["start"] <= entry["end_line"] and span["end"] >= entry["start_line"]
+            if not relevant:
+                continue
+            text = "\n".join(lines[span["start"] - 1:span["end"]])
+            overlap = len(terms & set(tokens(text)))
+            if definition_line is not None or overlap:
+                choices.append((overlap, -(span["end"] - span["start"]), span, text))
+        if not choices:
+            return None
+        _, _, span, text = max(choices, key=lambda row: row[:2])
+        return dict(entry, start_line=span["start"], end_line=span["end"], text=text,
+                    symbol=span["name"], symbol_complete=True)
 
     def retrieve(self, query):
         if not isinstance(query, str) or not query.strip() or len(query) > 1000:
@@ -135,20 +170,57 @@ class KnowledgeBase:
             if score > 0:
                 scored.append((score, entry))
         scored.sort(key=lambda pair: (-pair[0], pair[1]["source"], pair[1]["start_line"]))
+        # Give different files a chance before adding further passages from one file.
+        diverse, repeated, seen_sources = [], [], set()
+        for pair in scored:
+            source = pair[1]["source"]
+            (repeated if source in seen_sources else diverse).append(pair)
+            seen_sources.add(source)
+        candidates = (diverse + repeated)[:64]
         result = {"results": [], "documents": self.documents, "chunks": count,
                   "documents_by_source": self.documents_by_source,
                   "skipped_documents": self.skipped, "index_limited": self.limited,
-                  "results_limited": len(scored) > 4,
-                  "dependency_limit_reached": False,
-                  "dependency_parse_failures": self.dependencies.parse_failures}
-        selected = []
-        for score, entry in scored[:4]:
-            selected.append((entry, {"score": round(score, 4), "kind": "match"}))
-        # Expand a bounded breadth-first import neighborhood without executing code.
-        queue = [(entry["source"][5:], 0) for entry, _ in selected
-                 if entry["source"].startswith("repo/")]
+                  "results_limited": False, "dependency_limit_reached": False,
+                  "dependency_parse_failures": self.dependencies.parse_failures,
+                  "context_budget_bytes": self.context_budget, "context_bytes": 0,
+                  "budget_limited": False}
+        identities, selected = set(), []
+
+        def accept(entry, metadata, limit, definition_line=None):
+            expanded = self._expanded(entry, terms, definition_line)
+            variants = [expanded, dict(entry, symbol_complete=False)] if expanded else [entry]
+            for variant in variants:
+                if variant is None:
+                    continue
+                identity = (variant["source"], variant["start_line"], variant["end_line"], variant["text"])
+                if identity in identities:
+                    return "duplicate"
+                passage = {key: variant[key] for key in ("source", "start_line", "end_line", "text")}
+                passage.update({key: variant[key] for key in ("symbol", "symbol_complete") if key in variant})
+                passage.update(metadata)
+                result["results"].append(passage)
+                if len(json.dumps(result, ensure_ascii=False).encode()) <= limit - 128:
+                    identities.add(identity)
+                    if metadata["kind"] == "match":
+                        selected.append(variant)
+                    return "added"
+                result["results"].pop()
+            result["budget_limited"] = True
+            return "budget"
+
+        has_dependencies = any(self.dependencies.edges.get(e["source"].removeprefix("repo/"))
+                               for _, e in candidates[:4] if e["source"].startswith("repo/"))
+        primary_budget = int(self.context_budget * 0.6) if has_dependencies else self.context_budget
+        deferred = []
+        for score, entry in candidates:
+            if len(selected) >= 4:
+                deferred.append((score, entry))
+                continue
+            status = accept(entry, {"score": round(score, 4), "kind": "match"}, primary_budget)
+            if status == "budget":
+                deferred.append((score, entry))
+        queue = [(entry["source"][5:], 0) for entry in selected if entry["source"].startswith("repo/")]
         visited = {name for name, _ in queue}
-        identities = {(entry["source"], entry["start_line"], entry["text"]) for entry, _ in selected}
         added = 0
         for name, depth in queue:
             edges = self.dependencies.edges.get(name, {})
@@ -159,30 +231,33 @@ class KnowledgeBase:
                 passages = self.passages_by_source.get("repo/" + target, [])
                 if not passages:
                     continue
-                lines = self.dependencies.definitions.get(target, {})
-                definition_line = next((lines[symbol] for symbol in symbols if symbol in lines), None)
-                passage = next((p for p in passages if definition_line is not None
-                                and p["start_line"] <= definition_line <= p["end_line"]), passages[0])
-                identity = (passage["source"], passage["start_line"], passage["text"])
-                if identity not in identities:
+                definitions = self.dependencies.definitions.get(target, {})
+                definition_lines = list(dict.fromkeys(definitions[s] for s in symbols if s in definitions)) or [None]
+                for line in definition_lines:
+                    passage = next((p for p in passages if line is not None
+                                    and p["start_line"] <= line <= p["end_line"]), passages[0])
                     if added >= 4:
                         result["dependency_limit_reached"] = True
-                        continue
-                    selected.append((passage, {"score": 0.0, "kind": "dependency",
-                                              "via": "repo/" + name, "depth": depth + 1}))
-                    identities.add(identity)
-                    added += 1
+                        break
+                    status = accept(passage, {"score": 0.0, "kind": "dependency",
+                                              "via": "repo/" + name, "depth": depth + 1},
+                                    self.context_budget, line)
+                    if status == "added":
+                        added += 1
+                    elif status == "budget":
+                        result["dependency_limit_reached"] = True
                 if target not in visited:
                     visited.add(target)
                     queue.append((target, depth + 1))
-        for entry, metadata in selected:
-            result["results"].append({key: entry[key] for key in
-                                      ("source", "start_line", "end_line", "text")})
-            result["results"][-1].update(metadata)
-            if len(json.dumps(result, ensure_ascii=False).encode()) > 15_800:
-                result["results"].pop()
-                result["results_limited"] = True
-                if metadata["kind"] == "dependency":
-                    result["dependency_limit_reached"] = True
+        # Reclaim unused dependency space, while avoiding unexplored new import graphs.
+        for score, entry in deferred:
+            if len(selected) >= 4:
                 break
+            name = entry["source"].removeprefix("repo/")
+            if self.dependencies.edges.get(name) and name not in visited:
+                continue
+            accept(entry, {"score": round(score, 4), "kind": "match"}, self.context_budget)
+        result["results_limited"] = len(scored) > len(selected) or result["budget_limited"]
+        for _ in range(3):
+            result["context_bytes"] = len(json.dumps(result, ensure_ascii=False).encode())
         return json.dumps(result, ensure_ascii=False)
