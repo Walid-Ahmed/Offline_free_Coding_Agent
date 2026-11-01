@@ -6,7 +6,7 @@ Build a coding assistant that runs with a model on the user's own device, with n
 
 ## Version 0.1: inspect, propose, review
 
-Implemented architecture:
+Original v0.1 architecture (superseded by v0.2 below):
 
 ```text
 User task + workspace
@@ -31,7 +31,11 @@ Python CLI --> bounded agent loop --> local Ollama HTTP API --> installed model
 
 Acceptance criteria: preview mode never writes; declined writes never apply; confirmed writes match the preview; traversal and symlinks are rejected; remote endpoints are rejected; a fake model can complete the read/write/finish workflow; the application reports unavailable Ollama clearly. A live model smoke test depends on an available local service and installed model and must be reported separately from fixture tests.
 
-## Version 0.2: reliable project editing
+## Version 0.2: LangGraph orchestration
+
+Implemented a typed in-memory StateGraph with model, read, write, and limit nodes. Conditional edges dispatch validated actions and stop at finish or the model-action limit. The existing workspace restrictions and per-file confirmation remain. LangGraph and LangSmith are installed during setup, with tracing explicitly disabled during runs. There is no hosted graph service, checkpoint persistence, or automatic retry. Inference remains restricted to local `qwen2.5-coder:7b`.
+
+## Next: reliable project editing
 
 Prioritize after trying v0.1 on small real repositories:
 
@@ -56,3 +60,5 @@ Automated tests exercise simulated model actions and a local HTTP server. See th
 Local validation on November 1, 2026: all 9 automated tests passed on Python 3.13.3. The installed `qwen2.5-coder:14b` model passed the doctor check, proposed `hello.py` in preview mode, and completed a separate confirmed-write run in a temporary directory. The generated addition function passed two manually executed assertions. This is a small smoke test, not a general coding-quality benchmark. Python 3.10 and Linux checks are configured in CI but were not run locally.
 
 Current model policy: use only `qwen2.5-coder:7b`. The earlier 14b smoke test above is historical and does not validate the current 7b configuration. The CLI no longer accepts a model-selection option.
+
+Version 0.2 validation on November 1, 2026: all 21 tests passed on Python 3.13.3 with LangGraph 1.2.19, and `pip check` reported no broken requirements. A real `qwen2.5-coder:7b` run read a disposable Python file and finished with an explanation in two model actions. Tests also cover the 30-action boundary, approved writes at the limit, and disabled tracing with inherited tracing environment flags. Other Python versions remain covered by the CI configuration rather than local verification.

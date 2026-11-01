@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.1.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. The Python application uses only the standard library at runtime.
+Version 0.2.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -18,7 +18,18 @@ If Ollama is already running, quit its desktop app or stop its service first, th
 
 After downloading a model, disconnect from the internet to use it offline. Disabling cloud features does not block model downloads or all network traffic. The agent checks that the model is installed and rejects remote-backed model metadata; a loopback URL alone cannot guarantee how a separately configured server performs inference.
 
-From this repository, no Python package installation is required:
+Install the Python dependencies once while online, then activate the environment each time you open a new terminal:
+
+```sh
+python3 -m venv .venv
+# macOS / Linux:
+source .venv/bin/activate
+# Windows PowerShell instead:
+# .venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+Once installed, the agent runs offline with the downloaded model:
 
 ```sh
 python3 -m offline_agent --doctor
@@ -35,9 +46,21 @@ python3 -m offline_agent \
   'Read the calculator module and add input validation'
 ```
 
-Optionally install the CLI in a virtual environment (`python3 -m pip install -e .`) and replace `python3 -m offline_agent` with `offline-agent`. Installation may download build tooling; runtime does not require internet access.
+After installation, you can replace `python3 -m offline_agent` with `offline-agent` (on Windows, use `python -m offline_agent`). Installation downloads LangGraph and its dependencies; runtime does not require internet access.
 
-## What v0.1 does
+## LangGraph workflow
+
+```text
+START -> model -> read or write -> model
+             \-> finish -> END
+                    read/write at action limit -> limit -> END
+```
+
+The graph holds conversation messages, the current action, the action count, and the exit code in memory. It uses conditional edges to dispatch actions. Each write still requires your confirmation in `--apply` mode. The action limit counts model responses, not internal graph nodes. Graph recursion has a separate guard sized to that limit. This version does not add persistent checkpoints, saved sessions, or automatic retries of writes.
+
+Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
+
+## What v0.2 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
 - Uses structured JSON actions to read, propose a complete file, or finish.
@@ -65,4 +88,4 @@ Tests include a simulated agent workflow and a real loopback HTTP fixture, witho
 
 See [the implementation plan and roadmap](docs/PLAN.md) for architecture, acceptance criteria, and next steps. API integration follows [Ollama chat](https://docs.ollama.com/api/chat) and [structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
 
-Initial smoke test: validated locally with `qwen2.5-coder:14b` on Python 3.13.3, including preview and confirmed file creation. All 9 automated tests passed. This does not establish performance on larger projects.
+Historical v0.1 validation is recorded in [the plan](docs/PLAN.md). Current inference is restricted to `qwen2.5-coder:7b`. Automated tests use fake model responses and a loopback HTTP fixture, so they do not establish coding quality on larger projects.
