@@ -8,6 +8,7 @@ from pathlib import Path
 from .workspace import Workspace
 from .dependencies import PythonDependencies
 from .javascript import JS_EXTENSIONS, JavaScriptDependencies
+from .exclusions import IgnoreConfigurationError
 
 EXTENSIONS = {".md", ".txt", ".rst"}
 CODE_EXTENSIONS = EXTENSIONS | JS_EXTENSIONS | {
@@ -45,13 +46,18 @@ def chunks(text):
 
 
 class KnowledgeBase:
-    def __init__(self, directory=None, *, workspace=None, context_budget=16_000):
+    def __init__(self, directory=None, *, workspace=None, context_budget=16_000, excludes=()):
         if not 2000 <= context_budget <= 16_000:
             raise ValueError("Retrieval budget must be between 2000 and 16000 bytes")
         self.context_budget = context_budget
         self.source_texts = {}
         self.directory = directory
         self.workspace_root = workspace.root if isinstance(workspace, Workspace) else workspace
+        self.excludes = workspace.excludes if isinstance(workspace, Workspace) else tuple(excludes)
+        repository = Workspace(self.workspace_root, excludes=self.excludes) if self.workspace_root is not None else None
+        if repository is not None:
+            self.workspace_root = repository.root
+        self.excluded_reference_roots = 0
         self.documents = 0
         self.documents_by_source = {"builtin": 0, "user": 0, "repo": 0}
         self.skipped = 0
@@ -71,7 +77,18 @@ class KnowledgeBase:
         seen = set()
         code_files = {}
         for label, root, extensions in roots:
-            workspace = Workspace(root)
+            root = Path(root).resolve(strict=True)
+            if label == "user" and repository is not None and root.is_relative_to(repository.root):
+                relative = root.relative_to(repository.root)
+                if relative.parts:
+                    try:
+                        repository.path(relative.as_posix())
+                    except IgnoreConfigurationError:
+                        raise
+                    except ValueError:
+                        self.excluded_reference_roots += 1
+                        continue
+            workspace = repository if label == "repo" else Workspace(root, excludes=self.excludes)
             names = workspace.files()
             self.limited |= len(names) >= 1000
             for name in names:
@@ -79,6 +96,13 @@ class KnowledgeBase:
                         and not (label == "repo" and Path(name).name in CODE_NAMES)):
                     continue
                 identity = workspace.path(name).resolve()
+                if label == "user" and repository is not None and identity.is_relative_to(repository.root):
+                    try:
+                        repository.path(identity.relative_to(repository.root).as_posix())
+                    except IgnoreConfigurationError:
+                        raise
+                    except ValueError:
+                        continue
                 if identity in seen:
                     continue
                 if self.documents >= 200 or len(self.entries) >= 4000:
@@ -126,7 +150,8 @@ class KnowledgeBase:
 
     def refresh(self):
         """Rebuild the bounded local snapshot after an agent-approved write."""
-        self.__init__(self.directory, workspace=self.workspace_root, context_budget=self.context_budget)
+        self.__init__(self.directory, workspace=self.workspace_root, context_budget=self.context_budget,
+                      excludes=self.excludes)
 
     def _expanded(self, entry, terms, definition_line=None):
         """Prefer complete syntactic symbols over arbitrary line chunks."""
@@ -180,6 +205,7 @@ class KnowledgeBase:
         result = {"results": [], "documents": self.documents, "chunks": count,
                   "documents_by_source": self.documents_by_source,
                   "skipped_documents": self.skipped, "index_limited": self.limited,
+                  "excluded_reference_roots": self.excluded_reference_roots,
                   "results_limited": False, "dependency_limit_reached": False,
                   "dependency_parse_failures": self.dependencies.parse_failures,
                   "context_budget_bytes": self.context_budget, "context_bytes": 0,

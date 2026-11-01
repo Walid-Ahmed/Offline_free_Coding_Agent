@@ -39,7 +39,7 @@ Implemented a typed in-memory StateGraph with model, read, write, and limit node
 
 Prioritize after trying v0.1 on small real repositories:
 
-- Respect `.gitignore` and user include/exclude rules.
+- Exclusion support shipped in v0.6; further Git configuration integration remains optional.
 - Add context budgeting and recovery from malformed model output (literal content search shipped in v0.2.2).
 - Add multi-file proposals, atomic writes, backups, and rollback.
 - Add smaller patch edits with stale-content checks.
@@ -88,7 +88,8 @@ and configuration/build files in the local BM25 knowledge base. Citations use re
 paths. User reference documents and the bundled guide remain available, with
 physical-path deduplication. Startup reports source counts and index limits.
 Approved agent writes rebuild the local index before the next retrieval. The same
-bounded limits apply across all roots; .gitignore support is still pending.
+bounded limits apply across all roots. Git-ignore support was pending in v0.3.1
+and shipped in v0.6 below.
 
 Validation: all 60 automated tests passed on Python 3.13.3, including repository
 language coverage, source citations, default CLI indexing, deduplication, filtering,
@@ -137,3 +138,20 @@ versions tested: tree-sitter 0.25.2, JavaScript grammar 0.25.0, TypeScript gramm
 17, but first proposed an unnecessary edit in preview mode and misstated a loop
 count in its explanation. No files were written. Retrieval validation does not
 establish reliable action selection or fully accurate generated explanations.
+
+## Version 0.6: consistent exclusions
+
+Added root/nested Git-style .gitignore and .agentignore matching through local
+pathspec, plus repeatable deny-only --exclude patterns. Workspace listing, search,
+direct file access, all RAG roots, and dependency context share filtering. An
+in-workspace reference root cannot bypass its parent repository's rules. Negations
+work within each layer; ignored parents, Git ignores, and built-in restrictions
+cannot be bypassed by higher-layer inclusions. Global/ancestor Git settings are
+outside this version's root-scoped policy. See EXCLUSIONS.md.
+
+Validation: all 110 tests passed on Python 3.13.3 with pathspec 0.12.1, including
+nested negation/parent pruning, CLI patterns, shared listing/search/index/direct
+access behavior, ignored dependency targets, reference-root bypass prevention,
+refresh, configuration error handling, and no runtime Git/network calls. An
+optional fixture compared representative pattern results against local Git's
+check-ignore successfully. Editable package installation passed.

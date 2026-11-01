@@ -3,6 +3,7 @@ import difflib
 import json
 import os
 from pathlib import Path
+from .exclusions import Exclusions, IgnoreConfigurationError
 
 EXCLUDED = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build",
             ".aws", ".ssh", ".codex", ".agents"}
@@ -10,10 +11,12 @@ MAX_BYTES = 64_000
 
 
 class Workspace:
-    def __init__(self, root):
+    def __init__(self, root, *, excludes=()):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("Workspace must be a directory")
+        self.excludes = tuple(excludes)
+        self.exclusions = Exclusions(self.root, self.excludes)
 
     def path(self, name):
         rel = Path(name)
@@ -28,6 +31,8 @@ class Workspace:
             if current.is_symlink():
                 raise ValueError("Symlink paths are unavailable")
         target.resolve().relative_to(self.root)
+        if self.exclusions.ignored(rel, directory=target.is_dir()):
+            raise ValueError(f"Path is excluded by ignore rules: {name}")
         return target
 
     def files(self, scope=""):
@@ -35,9 +40,17 @@ class Workspace:
         if not start.is_dir():
             raise ValueError("File listing scope must be a directory")
         found = []
+        def visible_directory(path):
+            try:
+                self.path(path.relative_to(self.root).as_posix())
+                return True
+            except IgnoreConfigurationError:
+                raise
+            except (ValueError, OSError):
+                return False
+
         for base, dirs, files in os.walk(start, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if d not in EXCLUDED and not d.startswith(".")
-                             and not (Path(base) / d).is_symlink())
+            dirs[:] = sorted(d for d in dirs if visible_directory(Path(base) / d))
             for name in sorted(files):
                 if name.startswith("."):
                     continue
@@ -46,6 +59,8 @@ class Workspace:
                     path = self.path(rel)
                     if path.is_file() and path.stat().st_size <= MAX_BYTES:
                         found.append(rel)
+                except IgnoreConfigurationError:
+                    raise
                 except (ValueError, OSError):
                     continue
                 if len(found) >= 1000:

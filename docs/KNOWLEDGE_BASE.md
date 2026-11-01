@@ -31,8 +31,8 @@ images, compiled artifacts, and notebooks are not included.
 
 This is a bounded snapshot, not a guarantee every repository file is indexed.
 The existing hidden-path, excluded-directory, UTF-8, file-size, and global index
-limits still apply. Indexing does not yet honor `.gitignore`; eligible visible
-files may contain private data. Only select repositories you intend to expose to
+limits still apply. Indexing honors `.gitignore`, `.agentignore`, and CLI exclusions.
+Eligible visible files may still contain private data. Only select repositories you intend to expose to
 your local model. Larger repositories may need `search`/`read` for files outside
 the index. A directory need not have Git metadata to work.
 
@@ -43,7 +43,8 @@ snapshots; retrieve or read again when validating changed code.
 
 ## Add documents
 
-Create a knowledge folder inside the project you are working on:
+Create a knowledge folder inside the project you are working on, provided its
+ignore rules permit that folder:
 
 ```sh
 mkdir -p /path/to/project/knowledge
@@ -86,8 +87,8 @@ offline-agent --workspace /path/to/project \
 The supplied directory must exist. Documents can be outside the project, but only
 the user-configured reference root is indexed. The model cannot select a different
 root. Knowledge retrieval reads documents; it never edits that reference library.
-If references are inside the workspace, existing file tools can still edit them
-with the usual write approval.
+If references are inside the workspace, its ignore rules also apply to them.
+Permitted references can still be edited with the usual write approval.
 
 ## LangGraph manuals
 
@@ -102,8 +103,9 @@ website downloader or automatic documentation updater.
 PDF, Word, HTML, and images are not supported by this first version. Export their
 useful content to Markdown or UTF-8 plain text before adding it. Only add documents
 you intend to expose to your local coding model. In this repository `knowledge/`
-is ignored by Git; add the same rule to other projects if references should remain
-unpublished.
+is ignored by Git and therefore not indexed. To keep personal references outside
+Git while using them for RAG, use an external library via `--knowledge-base`.
+See [file exclusions](EXCLUSIONS.md) for rule scope and precedence.
 
 ## How local RAG works
 

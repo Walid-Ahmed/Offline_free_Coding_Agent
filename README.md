@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.5.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.6.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -60,7 +60,7 @@ The graph holds conversation messages, the current action, the action count, and
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.5 does
+## What v0.6 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
 - Uses structured JSON actions to read, search file contents, retrieve references, propose a complete file, run tests, or finish.
@@ -72,6 +72,17 @@ Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/
 
 Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-steps 20` for longer tasks. Exit codes: 0 finished/doctor passed, 1 error, 2 step limit, 130 interrupted. Model completion does not establish that generated code is correct.
 
+## File exclusions
+
+File listing, search, RAG indexing, and dependency retrieval now respect root and nested `.gitignore` / `.agentignore` rules. Direct file reads and writes also reject excluded paths. Add persistent agent-only rules to `.agentignore`, or pass extra patterns:
+
+```sh
+offline-agent --workspace /path/to/repo \
+  --exclude 'private/**' --exclude '*.pem' 'Explain this project'
+```
+
+Hidden/built-in paths stay blocked. User exclusions add restrictions; they cannot undo Git ignores. Rules apply to tracked files too. [Exclusion details](docs/EXCLUSIONS.md) cover precedence, negation, root scope, and reference libraries.
+
 ## Local reference knowledge base (RAG)
 
 The repository selected by `--workspace` is automatically indexed for RAG. The agent retrieves relevant source code, README/documentation, and common configuration/build files before answering, with citations such as `repo/src/orders.py:1-25`. No separate indexing command is needed. For Python and JavaScript/TypeScript, retrieval also follows local imports up to two hops and adds relevant dependency passages, even when they do not match the question keywords.
@@ -80,7 +91,7 @@ The repository selected by `--workspace` is automatically indexed for RAG. The a
 offline-agent --workspace /path/to/repo 'Explain how order validation works'
 ```
 
-**You can also add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too.
+**You can also add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too. Reference folders inside the workspace must be allowed by its ignore rules. If `knowledge/` is ignored (as in this repository), use an external reference library instead.
 
 ```sh
 offline-agent --workspace /path/to/project --knowledge-base /path/to/references \
@@ -112,7 +123,7 @@ offline-agent --workspace /absolute/path/to/project 'Search for validate_order a
 
 The model can call `search` with the literal query in `content` and an optional relative file or directory in `path`. An empty path searches the workspace. Search is read-only and needs no approval. Matching is case-sensitive, single-line, and literal (no regex); queries must be nonblank and at most 256 characters.
 
-Results contain relative paths, 1-based line numbers, and up to 320 characters of text around the first match on each matching line. Search returns at most 50 matching lines and 16,000 bytes of JSON. It considers up to 1,000 eligible files per scope and skips hidden/excluded paths, symlinks, files over 64 KB, binary data, unreadable files, and invalid UTF-8. Narrow the scope when a limit is reported. `files_searched` and `files_skipped` describe attempted candidates; `limit_reached` and `candidate_limit_reached` flag potentially incomplete results. A no-match result only describes the files actually searched. Search does not yet respect `.gitignore`.
+Results contain relative paths, 1-based line numbers, and up to 320 characters of text around the first match on each matching line. Search returns at most 50 matching lines and 16,000 bytes of JSON. It considers up to 1,000 eligible files per scope and skips hidden/excluded paths, symlinks, files over 64 KB, binary data, unreadable files, and invalid UTF-8. Narrow the scope when a limit is reported. `files_searched` and `files_skipped` describe attempted candidates; `limit_reached` and `candidate_limit_reached` flag potentially incomplete results. A no-match result only describes the files actually searched. Search uses the same ignore and exclusion policy as file listing and RAG.
 
 ## Run project tests
 
@@ -138,7 +149,7 @@ The tool returns the exit code and combined stdout/stderr to the model and print
 
 This is a prototype for trusted local projects, not an operating-system sandbox. It runs only the fixed test command described below; it cannot accept arbitrary commands, install dependencies, delete files through a tool, or roll back writes. Review changes with Git. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
 
-Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. It does not yet implement `.gitignore` rules. Conversation context accumulates within a task and can exceed small model context windows; there is no persistent memory or automatic context compaction yet. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
+Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. Conversation context accumulates within a task and can exceed small model context windows; there is no persistent memory or automatic context compaction yet. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
 
 ## Development
 

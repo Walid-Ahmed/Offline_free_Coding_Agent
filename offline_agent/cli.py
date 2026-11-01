@@ -11,6 +11,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=f"Offline coding agent powered by local {MODEL}")
     parser.add_argument("task", nargs="?", help="Coding task in plain English")
     parser.add_argument("--workspace", default=".")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+                        help="Additional Git-style exclusion; repeat for multiple patterns")
     parser.add_argument("--knowledge-base", help="Local reference directory; defaults to workspace/knowledge")
     parser.add_argument("--retrieval-budget", type=int, default=16000, metavar="BYTES",
                         help="Retrieval JSON budget in UTF-8 bytes (2000..16000; default 16000)")
@@ -29,7 +31,7 @@ def main(argv=None):
         if args.doctor:
             print(f"Local Ollama is ready: {MODEL}")
             return 0
-        workspace = Workspace(args.workspace)
+        workspace = Workspace(args.workspace, excludes=args.exclude)
         references = Path(args.knowledge_base).expanduser() if args.knowledge_base else workspace.root / "knowledge"
         knowledge = KnowledgeBase(references if args.knowledge_base or references.exists() else None,
                                   workspace=workspace, context_budget=args.retrieval_budget)
@@ -38,6 +40,9 @@ def main(argv=None):
               "Add your own .md, .txt, or .rst references to " + str(references))
         if knowledge.limited:
             print("Index limits reached; retrieval covers only part of the available files. Use search/read for more.")
+        if knowledge.excluded_reference_roots:
+            print("Reference directory excluded by workspace rules; it was not indexed. "
+                  "Use a permitted directory or an external reference library.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
                    confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",
