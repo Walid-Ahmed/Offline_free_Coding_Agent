@@ -71,14 +71,16 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
 
     def call_model(state: AgentState):
         step = state["steps"] + 1
-        finishing = state.get("repeated_lookup", False)
+        finishing = state.get("repeated_lookup", False) or step >= max_steps
         schema = SCHEMA
         messages = state["messages"]
         if finishing:
             schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]}}}
             messages = messages + [{"role": "user", "content":
-                "Loop recovery: answer the ORIGINAL task using the evidence already available. "
+                "Final-answer call: no tool calls remain. Answer the ORIGINAL task using the evidence already available. "
                 "Return action=finish now. If evidence is insufficient, state what is missing. "
+                "Include relevant paths and line numbers already found, even for files not read in full. "
+                "Distinguish inspected details from search snippets; do not claim every file was inspected. "
                 "Do not repeat a file summary that does not answer the task."}]
         output(f"\n[{step}/{max_steps}] Waiting for the local model (loading and prompt processing can take time)...")
         started = time.monotonic()
@@ -101,7 +103,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             raise ValueError("Model returned an invalid action")
         steps = state["steps"] + 1
         if finishing and reply["action"] != "finish":
-            output("Loop recovery failed: the model did not return a final answer. No further tool was executed.")
+            output("Final-answer request failed: the model requested another tool. The task is incomplete; no further tool was executed.")
             return {"reply": reply, "steps": steps, "exit_code": 2, "repeated_lookup": True}
         previous = next((json.loads(m["content"]) for m in reversed(state["messages"])
                          if m["role"] == "assistant"), None)

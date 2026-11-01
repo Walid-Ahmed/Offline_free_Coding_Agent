@@ -107,14 +107,37 @@ class GraphTests(unittest.TestCase):
 
         self.assertEqual(run(Model(), self.ws, "Task", max_steps=1, output=lambda _: None), 0)
 
-    def test_approved_write_on_last_action_is_applied(self):
+    def test_last_action_is_reserved_for_answer_and_cannot_write(self):
         class Model:
             def chat(self, messages, schema):
                 return action("write", "new.py", "answer = 42\n")
 
         self.assertEqual(run(Model(), self.ws, "Task", max_steps=1, apply=True,
                              confirm=lambda _: True, output=lambda _: None), 2)
-        self.assertEqual(self.ws.read("new.py"), "answer = 42\n")
+        self.assertFalse((Path(self.temp.name) / "new.py").exists())
+
+    def test_four_step_inspection_reserves_last_call_for_answer(self):
+        calls = []
+        for name in ("first.py", "second.py", "third.py"):
+            Path(self.temp.name, name).write_text("app = FastAPI()\n")
+
+        class Model:
+            def chat(self, messages, schema):
+                calls.append((messages, schema))
+                if schema["properties"]["action"]["enum"] == ["finish"]:
+                    return action("finish", content="Entry points include first.py and second.py.")
+                if len(calls) == 1:
+                    return action("search", content="FastAPI(")
+                return action("read", ("first.py", "second.py", "third.py")[len(calls)-2])
+
+        output = []
+        with patch.object(self.ws, "read", wraps=self.ws.read) as read:
+            result = run(Model(), self.ws, "Find entry points", max_steps=4, output=output.append)
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[-1][1]["properties"]["action"]["enum"], ["finish"])
+        self.assertIn("no tool calls remain", calls[-1][0][-1]["content"])
+        self.assertIn("Entry points include first.py and second.py.", output)
 
     @patch.dict("os.environ", {"LANGSMITH_TRACING": "true", "LANGCHAIN_TRACING_V2": "true"})
     def test_parent_tracing_is_disabled_for_model_execution(self):

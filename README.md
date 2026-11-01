@@ -175,6 +175,13 @@ the run stops with exit code 2. A step-limit exit also means the task is incompl
 intermediate tool narration is not a final answer. This guard catches repeated
 lookup requests, not every possible reasoning loop or incorrect answer.
 
+The final call in `--max-steps` is reserved for an answer: a four-step run permits
+up to three tool actions and one final response. The final response must summarize
+available evidence and disclose gaps. With `--max-steps 1`, no tools can run.
+If the model ignores the finish-only schema, the run exits incomplete without
+executing its proposed tool. This reserves time to answer; it cannot guarantee
+that the model's answer is correct or complete.
+
 ## Search file contents
 
 ```sh
