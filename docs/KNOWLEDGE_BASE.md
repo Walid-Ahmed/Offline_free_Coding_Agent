@@ -127,9 +127,9 @@ not every excluded path.
 
 References are untrusted data. The model is instructed to use them as evidence,
 not follow embedded commands. This is guidance rather than a prompt-injection
-security boundary. Existing write/test approvals still apply. Project test code
-retains the previously documented user/network permissions; RAG itself performs
-no network requests.
+security boundary. Existing write/test approvals still apply. Project tests now run in isolated Docker containers with no external network
+and a read-only project snapshot; see [isolated tests](ISOLATED_TESTS.md).
+RAG itself performs no network requests.
 
 ## Dependency-aware Python retrieval
 

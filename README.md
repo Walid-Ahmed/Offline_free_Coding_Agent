@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.6.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.7.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -60,11 +60,11 @@ The graph holds conversation messages, the current action, the action count, and
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.6 does
+## What v0.7 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
 - Uses structured JSON actions to read, search file contents, retrieve references, propose a complete file, run tests, or finish.
-- Runs fixed Python unittest discovery after explicit approval, with a 30-second timeout and 16 KB output cap.
+- Runs unittest or pytest in isolated Docker containers after approval, with networking disabled, read-only project snapshots, a 30-second timeout, and bounded output.
 - Shows unified diffs before edits, with confirmation for each write.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
 - Rejects traversal, hidden paths, symlinks, and hard-linked write targets.
@@ -125,29 +125,28 @@ The model can call `search` with the literal query in `content` and an optional 
 
 Results contain relative paths, 1-based line numbers, and up to 320 characters of text around the first match on each matching line. Search returns at most 50 matching lines and 16,000 bytes of JSON. It considers up to 1,000 eligible files per scope and skips hidden/excluded paths, symlinks, files over 64 KB, binary data, unreadable files, and invalid UTF-8. Narrow the scope when a limit is reported. `files_searched` and `files_skipped` describe attempted candidates; `limit_reached` and `candidate_limit_reached` flag potentially incomplete results. A no-match result only describes the files actually searched. Search uses the same ignore and exclusion policy as file listing and RAG.
 
-## Run project tests
+## Run isolated project tests
 
-With your virtual environment active:
-
-```sh
-offline-agent --workspace /absolute/path/to/project 'Run the tests and explain any failures'
-```
-
-The model can request `run_tests`. The agent displays the command and working directory, then asks for approval. It uses the agent's Python interpreter to run:
+Start a local Docker Linux-container runtime and prepare the image once while online:
 
 ```sh
-python -m unittest discover -s tests -v
+docker build -t offline-agent-tests:0.7.0 sandbox
 ```
 
-The project must have a `tests/` directory containing unittest-compatible tests (normally `test*.py`). Project dependencies must already be installed in that Python environment. No packages are downloaded by this tool, and pytest is not supported yet. Each request requires approval, independently of `--apply`; declining or reaching EOF prevents execution. Library callers must supply a `confirm_tests` callback to permit runs.
+Then request either unittest (the default) or pytest:
 
-The tool returns the exit code and combined stdout/stderr to the model and prints them for you. Runs time out after 30 seconds, and only the first 16,000 output bytes are retained. Ordinary subprocesses in the test process group are cleaned up. Zero discovered tests can return exit code 0; inspect the test count. Agent exit code 0 means the conversation finished, not that tests passed.
+```sh
+offline-agent --workspace /path/to/project --test-runner pytest \
+  'Run tests and explain failures'
+```
 
-**Run only trusted project tests.** Tests and their imports execute with your user permissions and inherited environment, and can modify files or access the network. This runner is not an OS sandbox and cannot confine malicious code or detached subprocesses. File-tool restrictions do not restrict test code. To guarantee offline test execution, disconnect from the network or use an externally isolated environment. The runner currently supports macOS/Linux; other agent tools remain available on Windows.
+The agent asks for approval before each run. Tests receive a filtered, read-only project copy, disabled networking, and a writable temporary area. They cannot change the original project through the mounted filesystem. Host environment variables and the Docker socket are not exposed. Time/resource/output limits and forced container cleanup apply.
+
+**No host fallback:** Docker and a prepared local image are required. The agent never pulls images or installs packages during a test run. For project dependencies, prepare an image and select `--test-image my-project-tests:local`. See [isolated test setup and limits](docs/ISOLATED_TESTS.md).
 
 ## Current limits
 
-This is a prototype for trusted local projects, not an operating-system sandbox. It runs only the fixed test command described below; it cannot accept arbitrary commands, install dependencies, delete files through a tool, or roll back writes. Review changes with Git. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
+This prototype uses Docker isolation for tests; file tools themselves are not an OS sandbox. It runs only the fixed test commands described above; it cannot accept arbitrary commands, install dependencies, delete files through a tool, or roll back writes. Review changes with Git. Earlier confirmed edits remain if a later step fails. Avoid concurrently modifying files or directories while it runs; path checks are not hardened against hostile filesystem races.
 
 Hidden files are skipped, but visible files can still contain secrets. Only point the agent at projects you intend to expose to your local model. Conversation context accumulates within a task and can exceed small model context windows; there is no persistent memory or automatic context compaction yet. Diffs for files without trailing newlines can be awkward to read. Model prose is untrusted and may make unsupported claims.
 

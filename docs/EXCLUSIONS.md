@@ -85,6 +85,6 @@ configuration, not added to model context as hidden documents.
 Policies are cached for a workspace instance. Restart a task after externally
 editing ignore files. RAG rebuilds its policies/index after approved writes,
 preserving CLI exclusions. Already retrieved conversation text is not erased by a
-later rule change. Filtering is not an OS security boundary: approved test code
-still executes with your user permissions and can read/write files outside these
-file-tool restrictions. Existing test approval requirements remain unchanged.
+later rule change. Filtering alone is not an OS security boundary. Test execution now uses a filtered,
+read-only snapshot inside Docker with networking disabled; see [isolated tests](ISOLATED_TESTS.md).
+Existing per-run approval requirements remain unchanged.

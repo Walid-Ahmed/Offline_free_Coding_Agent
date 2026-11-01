@@ -9,47 +9,6 @@ from offline_agent.test_runner import run_tests
 from offline_agent.workspace import Workspace
 
 
-@unittest.skipUnless(os.name == "posix", "Test runner supports macOS/Linux")
-class RunnerTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        (self.root / "tests").mkdir()
-        self.ws = Workspace(self.root)
-
-    def script(self, code):
-        (self.root / "tests" / "test_example.py").write_text(code)
-
-    def test_passing_tests(self):
-        self.script("import unittest\nclass Test(unittest.TestCase):\n def test_add(self): self.assertEqual(2+2, 4)\n")
-        result = run_tests(self.ws)
-        self.assertIn("Exit code: 0", result)
-        self.assertIn("Ran 1 test", result)
-        self.assertIn("OK", result)
-
-    def test_failure_output_and_exit_code(self):
-        self.script("import unittest\nclass Test(unittest.TestCase):\n def test_fail(self): self.fail('expected failure')\n")
-        result = run_tests(self.ws)
-        self.assertIn("Exit code: 1", result)
-        self.assertIn("expected failure", result)
-
-    def test_timeout(self):
-        self.script("import time\ntime.sleep(60)\n")
-        self.assertIn("Timed out", run_tests(self.ws, timeout=0.3))
-
-    def test_output_is_bounded(self):
-        self.script("print('x' * 100000)\n")
-        result = run_tests(self.ws, output_limit=100)
-        self.assertIn("Output truncated", result)
-        self.assertLess(len(result), 200)
-
-    def test_missing_tests_directory(self):
-        (self.root / "tests").rmdir()
-        with self.assertRaises(ValueError):
-            run_tests(self.ws)
-
-
 class GraphRunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -89,3 +48,12 @@ class GraphRunnerTests(unittest.TestCase):
         run(model, self.ws, "Test", confirm_tests=lambda: True, output=lambda _: None)
         runner.assert_not_called()
         self.assertIn("no path, content, or custom command", calls[1][-1]["content"])
+
+    @patch("offline_agent.agent.run_tests", return_value="Isolation: Docker; runner: pytest\nExit code: 0\n1 passed")
+    def test_configured_pytest_is_used_without_model_command_arguments(self, runner):
+        model, calls = self.model()
+        options = {"runner": "pytest", "image": "project-tests:local", "docker_socket": None}
+        run(model, self.ws, "Run pytest", confirm_tests=lambda: True,
+            test_options=options, output=lambda _: None)
+        runner.assert_called_once_with(self.ws, **options)
+        self.assertIn("runner: pytest", calls[1][-1]["content"])

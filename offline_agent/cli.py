@@ -5,6 +5,7 @@ from .knowledge import KnowledgeBase
 from .agent import run
 from .model import MODEL, Ollama
 from .workspace import Workspace
+from .test_runner import DEFAULT_IMAGE
 
 
 def main(argv=None):
@@ -16,6 +17,9 @@ def main(argv=None):
     parser.add_argument("--knowledge-base", help="Local reference directory; defaults to workspace/knowledge")
     parser.add_argument("--retrieval-budget", type=int, default=16000, metavar="BYTES",
                         help="Retrieval JSON budget in UTF-8 bytes (2000..16000; default 16000)")
+    parser.add_argument("--test-runner", choices=("unittest", "pytest"), default="unittest")
+    parser.add_argument("--test-image", default=DEFAULT_IMAGE, help="Prepared local Docker image for isolated tests")
+    parser.add_argument("--test-docker-socket", help="Absolute local Unix Docker socket; remote daemons are unsupported")
     parser.add_argument("--endpoint", default="http://127.0.0.1:11434")
     parser.add_argument("--apply", action="store_true", help="Allow writing after per-file confirmation")
     parser.add_argument("--max-steps", type=int, default=12, choices=range(1, 31), metavar="1..30")
@@ -45,9 +49,11 @@ def main(argv=None):
                   "Use a permitted directory or an external reference library.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
+                   test_options={"runner": args.test_runner, "image": args.test_image,
+                                 "docker_socket": args.test_docker_socket},
                    confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",
                    confirm_tests=lambda: input(
-                       "Run project tests with your user permissions (including file and network access)? [y/N] "
+                       f"Run {args.test_runner} in Docker with network disabled and project read-only? [y/N] "
                    ).strip().lower() == "y")
     except (ValueError, OSError, EOFError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

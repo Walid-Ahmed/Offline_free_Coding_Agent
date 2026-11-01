@@ -49,7 +49,7 @@ Prioritize after trying v0.1 on small real repositories:
 
 Added a run_tests graph node using fixed unittest discovery under tests/, per-run approval, a 30-second timeout, bounded 16 KB output, and POSIX process-group cleanup. Results feed back into the model conversation. This is explicitly limited to trusted projects on macOS/Linux and is not an isolated runner; test code retains user file/network permissions. Model selection remains fixed to qwen2.5-coder:7b.
 
-## Future: isolated verification loop
+## Isolated verification loop (shipped in v0.7)
 
 Add explicitly approved test commands in an OS-isolated runner, bounded output and timeouts, failure feedback, and clear test evidence. General command execution and confinement of untrusted tests require a separate security design; a fixed command alone is insufficient. Keep network disabled for the runner.
 
@@ -155,3 +155,26 @@ access behavior, ignored dependency targets, reference-root bypass prevention,
 refresh, configuration error handling, and no runtime Git/network calls. An
 optional fixture compared representative pattern results against local Git's
 check-ignore successfully. Editable package installation passed.
+
+## Version 0.7: isolated unittest and pytest
+
+Replaced direct host test execution with mandatory Docker Linux-container isolation.
+Local image inspection pins the image ID; no pulls, builds, or dependency installs
+occur during runs. A filtered bounded snapshot is mounted read-only, networking is
+disabled, the root filesystem is read-only, and tests run as an unprivileged user
+with dropped capabilities and resource limits. Temporary writes are isolated.
+Clean Docker config avoids inherited proxy/context settings. Tests use a fixed
+unittest or pytest command selected by the user, with approval, output/time bounds,
+and force-removal of the whole container. Missing isolation fails closed. CI adds
+real container integration coverage; setup and limits are in ISOLATED_TESTS.md.
+
+Validation: all 122 tests passed with real container integration enabled on Python
+3.13.3 / Docker Desktop 29.8.2. Five integration cases exercised unittest and pytest
+pass/fail results, dropped capabilities/no-new-privileges, read-only root/project
+mounts, only loopback active, blocked outbound connection, inaccessible host
+canary/excluded files/socket/environment secret, permitted temporary writes,
+timeout/output limits, and removal of containers with detached children. No
+sandbox containers remained after validation. The local image was prepared with
+pytest 9.2.0. Package installation, dependency checks, compilation, and whitespace
+checks passed. CI adds a separate Linux Docker integration job; its result is
+separate from this local validation.
