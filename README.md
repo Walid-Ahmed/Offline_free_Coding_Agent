@@ -1,5 +1,7 @@
 # Offline Free Coding Agent
 
+![A happy developer coding locally: offline, private, and no API fees.](docs/assets/offline-agent-banner.png)
+
 Version 0.7.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
