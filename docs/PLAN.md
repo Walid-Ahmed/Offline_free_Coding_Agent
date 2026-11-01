@@ -74,3 +74,9 @@ Version 0.2.1 validation: all 29 automated tests passed on Python 3.13.3. The re
 Added a read-only search graph node and scoped Workspace.search. Model arguments reuse content for the query and path for optional file/directory scope. Search is literal and case-sensitive, bounded to 1,000 candidate files, 50 matching lines, and 16 KB of JSON, using existing workspace path/read restrictions. Snippets carry relative paths and 1-based line numbers. No external search program or dependency is needed.
 
 Validation: all 40 automated tests passed on Python 3.13.3, including literal matching, scope, excluded paths, binary/encoding handling, snippets, candidate/result limits, and graph feedback. A live local qwen2.5-coder:7b run called search and correctly reported orders.py at line 1 in a disposable project.
+
+## Version 0.3: offline reference RAG
+
+Added local BM25 passage retrieval with citations, automatic task context, and a retrieve graph node. Ships a project-authored LangGraph guide and accepts user references under workspace/knowledge or an explicit --knowledge-base directory. No extra model, network client, persistent store, or vector database is added. Supported reference formats are Markdown, UTF-8 text, and reStructuredText. See KNOWLEDGE_BASE.md for bounds and setup.
+
+Validation: all 52 tests passed on Python 3.13.3. Coverage includes BM25 ranking, line citations, local document filtering and bounds, index refresh on a new task, initial retrieval context, explicit retrieve routing, and no network connections during reference loading/retrieval. The built wheel includes the bundled guide. A real local qwen2.5-coder:7b run retrieved a user policy through the tool, and a final-answer smoke test displayed the policy with the correct user/team.md:1-1 citation. Final answers now display content as well as the model's short status message.

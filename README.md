@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.2.2 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.3.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -51,7 +51,7 @@ After installation, you can replace `python3 -m offline_agent` with `offline-age
 ## LangGraph workflow
 
 ```text
-START -> model -> read, search, write, or run_tests -> model
+START -> model -> read, search, retrieve, write, or run_tests -> model
              \-> finish -> END
                     tool at action limit -> limit -> END
 ```
@@ -60,10 +60,10 @@ The graph holds conversation messages, the current action, the action count, and
 
 Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/python/langgraph/graph-api). Tracing is disabled using [the tracing context API](https://docs.langchain.com/langsmith/trace-without-env-vars), even if tracing is enabled in the parent environment.
 
-## What v0.2.2 does
+## What v0.3 does
 
 - Lists up to 1,000 visible project files and lets the model read selected UTF-8 files.
-- Uses structured JSON actions to read, search file contents, propose a complete file, run tests, or finish.
+- Uses structured JSON actions to read, search file contents, retrieve references, propose a complete file, run tests, or finish.
 - Runs fixed Python unittest discovery after explicit approval, with a 30-second timeout and 16 KB output cap.
 - Shows unified diffs before edits, with confirmation for each write.
 - Limits reads/writes to 64 KB per file and tasks to 12 steps by default (maximum 30).
@@ -71,6 +71,17 @@ Implementation follows the [LangGraph graph API](https://docs.langchain.com/oss/
 - Connects only to numeric HTTP loopback endpoints, with proxies and redirects disabled.
 
 Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-steps 20` for longer tasks. Exit codes: 0 finished/doctor passed, 1 error, 2 step limit, 130 interrupted. Model completion does not establish that generated code is correct.
+
+## Local reference knowledge base (RAG)
+
+**You can add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too.
+
+```sh
+offline-agent --workspace /path/to/project --knowledge-base /path/to/references \
+  'Use my references to explain LangGraph conditional edges'
+```
+
+The agent retrieves relevant passages automatically and can call `retrieve` for more, with source and line citations. Indexing and retrieval run entirely on your device using BM25 keyword ranking. No extra model, internet access, embeddings, or vector database is needed. See [how to add manuals and your own references](docs/KNOWLEDGE_BASE.md) for supported formats, limits, and examples.
 
 ## Search file contents
 

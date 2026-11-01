@@ -6,3 +6,5 @@ build/
 dist/
 .env
 .DS_Store
+# Personal knowledge documents stay local.
+knowledge/
