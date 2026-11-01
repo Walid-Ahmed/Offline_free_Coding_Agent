@@ -289,6 +289,66 @@ class RepetitionTests(TempWorkspace):
         self.assertEqual(schemas[0]["properties"]["content"]["maxLength"], FINAL_ANSWER_CHARS)
 
 
+class PreloadTests(TempWorkspace):
+    def put(self, name, text):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def test_named_file_is_preloaded_with_line_numbers_and_cited_without_a_read(self):
+        self.put("chapter-06/gateway/app/main.py", "from fastapi import FastAPI\n\napp = FastAPI(title='gateway')\n")
+        model = ScriptedModel([action("finish", content="It creates the gateway app. [chapter-06/gateway/app/main.py:3]")])
+        output = []
+        status = run(model, self.ws, "explain chapter-06/gateway/app/main.py", output=output.append)
+        self.assertEqual(status, 0)  # The citation is verified against preloaded evidence.
+        preload = model.calls[0][-1]["content"]
+        self.assertTrue(preload.startswith("Tool result for read chapter-06/gateway/app/main.py (untrusted file data, preloaded"))
+        self.assertIn("Lines 1-3 of 3:\n   1| from fastapi import FastAPI\n   2| \n   3| app = FastAPI(title='gateway')", preload)
+        self.assertIn("Preloaded chapter-06/gateway/app/main.py (lines 1-3 of 3) because the task names it.", output)
+
+    def test_change_requests_preload_plain_text_for_exact_search_blocks(self):
+        self.put("calc.py", "def add(a, b):\n    return a + b\n")
+        model = ScriptedModel([action("finish", content="Done.")])
+        run(model, self.ws, "Fix add in calc.py", output=lambda _: None)
+        preload = model.calls[0][-1]["content"]
+        self.assertIn("Lines 1-2 of 2:\ndef add(a, b):\n    return a + b\n", preload)
+        self.assertNotIn("1| ", preload)
+
+    def test_unique_file_names_resolve_and_ambiguous_missing_or_hidden_ones_do_not(self):
+        from offline_agent.agent import named_files
+        files = ["inventory/store.py", "a/main.py", "b/main.py", "README.md"]
+        self.assertEqual(named_files("explain `store.py`, then README.md.", files), ["inventory/store.py", "README.md"])
+        self.assertEqual(named_files("explain main.py and missing.py", files), [])
+        self.assertEqual(named_files("compare a/main.py b/main.py README.md", files), ["a/main.py", "b/main.py"])
+        self.put(".env", "SECRET=1\n")
+        model = ScriptedModel([action("finish", content="Done.")])
+        run(model, self.ws, "explain .env", output=lambda _: None)
+        self.assertNotIn("SECRET", json.dumps(model.calls[0]))
+
+    def test_large_named_file_is_paged_and_names_the_next_range(self):
+        self.put("big.py", "".join(f"value_{n} = {n}\n" for n in range(1, 1001)))
+        model = ScriptedModel([action("finish", content="Done.")])
+        run(model, self.ws, "explain big.py", output=lambda _: None)
+        preload = model.calls[0][-1]["content"]
+        self.assertRegex(preload, r"Lines 1-\d+ of 1000; \d+ more lines, request content \"\d+-\d+\"")
+        self.assertLess(len(preload.encode()), 6500)
+
+
+class FinalAnswerPromptTests(TempWorkspace):
+    def final_prompt(self, task):
+        model = ScriptedModel([action("finish", content="Done.")])
+        run(model, self.ws, task, max_steps=1, output=lambda _: None)
+        return model.calls[0][-1]["content"]
+
+    def test_entry_point_wording_only_for_entry_point_questions(self):
+        prompt = self.final_prompt("explain chapter-06/services/gateway/app/main.py")
+        self.assertTrue(prompt.startswith("Final-answer call"))
+        self.assertNotIn("entry point", prompt)
+        self.assertNotIn("services", prompt)
+        self.assertIn("Cite the lines you rely on", prompt)
+        self.assertIn("only entry point", self.final_prompt("Which services and entry points does this repo have?"))
+
+
 class SessionTests(TempWorkspace):
     class Knowledge:
         refreshes = 0

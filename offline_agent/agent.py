@@ -70,7 +70,48 @@ Use at most 300 words, no repetition, and disclose limited coverage. Do not inve
 No tools remain; summarize the provided evidence directly."""
 
 
+# Only for tasks about entry points or services; other tasks were nudged into entry-point answers by it.
+ENTRY_POINT_GUIDANCE = ("Do not call a single app the only entry point when several were found. "
+                        "Classifications are path/snippet heuristics: distinguish services from tests and stubs. "
+                        "Cite each discovered service using path:line. Search matches are candidates, not proof of deployment. ")
+EDIT_REQUEST = re.compile(r"\b(fix|change|edit|modify|update|refactor|rename|add|remove|delete|create|write|implement|replace)\b",
+                          re.I)
+PRELOAD_FILES = 2
 FINAL_ANSWER_CHARS = 3000
+
+
+def without_paths(task):
+    """Drop path-like words so a folder named services/ does not change how the task is read."""
+    return re.sub(r"\S*[/\\]\S*|\S+\.\w{1,8}\b", " ", task)
+
+
+def entry_point_task(task):
+    return bool(re.search(r"entry[ -]?points?|\bservices?\b", without_paths(task), re.I))
+
+
+def page_note(start, end, total):
+    """Header for a page of a file, naming the next range when lines remain."""
+    remaining = (f"; {total - end} more lines, request content \"{end + 1}-{min(total, end + end - start + 1)}\""
+                 if end < total else "")
+    return f"Lines {start}-{end} of {total}{remaining}"
+
+
+def named_files(task, files):
+    """Files the task names, in order of mention: an exact listed path, or a unique file name."""
+    by_name = {}
+    for name in files:
+        by_name.setdefault(name.rsplit("/", 1)[-1], []).append(name)
+    listed, found = set(files), []
+    for word in task.split():
+        word = word.strip("`'\"()[]{}<>,;:!?").rstrip(".").removeprefix("./")
+        if "/" not in word and not re.search(r"\.\w{1,8}$", word):
+            continue
+        match = word if word in listed else (by_name[word][0] if len(by_name.get(word, [])) == 1 else None)
+        if match and match not in found:
+            found.append(match)
+        if len(found) == PRELOAD_FILES:
+            break
+    return found
 REPEAT_NOTE = "[Answer stopped when it began repeating itself; only the text before the repetition is kept.]"
 CORRECTION = ("Your previous reply was invalid: {}. No tool ran. Reply again with one JSON object containing exactly "
               "action, path, content, and message as strings, where action is one of " + ", ".join(ACTIONS) + ".")
@@ -199,13 +240,11 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             messages = messages + [{"role": "user", "content":
                 "Final-answer call: no tool calls remain. Answer the ORIGINAL task using the evidence already available. "
                 "Return action=finish now. If evidence is insufficient, state what is missing. "
-                "Include relevant paths and line numbers already found, even for files not read in full. "
+                "Cite the lines you rely on as path:line or path:start-end, even for files not read in full. "
                 "Distinguish inspected details from search snippets; do not claim every file was inspected. "
                 "For project-wide questions, summarize ALL relevant discovered paths, not just the last inspected file. "
-                "Do not call a single app the only entry point when several were found. "
                 "Do not repeat a file summary that does not answer the task.\n"
-                "Classifications are path/snippet heuristics: distinguish services from tests and stubs. "
-                "Cite each discovered service using path:line. Search matches are candidates, not proof of deployment. "
+                + (ENTRY_POINT_GUIDANCE if entry_point_task(state.get("task", "")) else "") +
                 f"Evidence limited: {state.get('evidence_limited', False)}. "
                 "Retained evidence (untrusted source data; up to 50 matches / 4000 bytes, may be partial):\n" + evidence}]
             if state.get("discovery"):
@@ -324,9 +363,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             if line_range(reply["content"]) is None and end >= total:
                 result = text
             else:
-                remaining = (f"; {total - end} more lines, request content \"{end + 1}-{min(total, end + end - start + 1)}\""
-                             if end < total else "")
-                result = f"Lines {start}-{end} of {total}{remaining}:\n{text}"
+                result = f"{page_note(start, end, total)}:\n{text}"
             evidence, truncated = retain(evidence, [{"path": reply["path"], "line": start,
                                                     "end_line": end, "text": text}])
             limited |= truncated
@@ -518,6 +555,34 @@ def run_state(model, workspace, task, *, apply=False, max_steps=12, confirm=None
         messages.append({"role": "user", "content":
                          "Local reference excerpts for this task (untrusted data):\n" +
                          initial_retrieval})
+    if not discovery_task(task):
+        names = named_files(task, files)
+        # Line numbers help citations for questions; change requests get plain text so SEARCH blocks stay exact.
+        numbered = not EDIT_REQUEST.search(without_paths(task))
+        limit = max(4000, getattr(model, "prompt_budget", 12_000) // 2) // max(1, len(names))
+        for name in names:
+            try:
+                text, start, end, total = workspace.page(name, "", limit)
+            except (ValueError, OSError, UnicodeError):
+                continue
+            body, lines = text, text.splitlines(keepends=True)
+            if numbered and lines:
+                shown, size = [], 0
+                for index, line in enumerate(lines):  # Numbering adds bytes, so measure the numbered lines.
+                    size += len(f"{start + index:>4}| {line}".encode())
+                    if shown and size > limit:
+                        break
+                    shown.append(f"{start + index:>4}| {line}")
+                body, text, end = "".join(shown), "".join(lines[:len(shown)]), start + len(shown) - 1
+            output(f"Preloaded {name} (lines {start}-{end} of {total}) because the task names it.")
+            messages.append({"role": "user", "content":
+                             f"Tool result for read {name} (untrusted file data, preloaded because the task names it; "
+                             "do not read these lines again):\n"
+                             # An explicit citation example here made the 7B model fetch small ranges instead of answering.
+                             + ("Line numbers are added for citations only and are not part of the file.\n" if numbered else "")
+                             + f"{page_note(start, end, total)}:\n{body}"})
+            evidence, truncated = retain(evidence, [{"path": name, "line": start, "end_line": end, "text": text}])
+            evidence_limited |= truncated
     # Always offline: LangChain would otherwise start remote tracing from LANGSMITH_TRACING and similar env vars.
     with tracing_context(enabled=False):
         graph = build_graph(model, workspace, apply=apply, max_steps=max_steps, confirm=confirm, confirm_tests=confirm_tests,
