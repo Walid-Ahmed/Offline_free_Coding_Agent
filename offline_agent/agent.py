@@ -62,6 +62,7 @@ class AgentState(TypedDict):
     steps: int
     exit_code: int
     repeated_lookup: bool
+    search_evidence: list[dict]
 
 
 def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print):
@@ -76,12 +77,16 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         messages = state["messages"]
         if finishing:
             schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]}}}
+            evidence = json.dumps(state.get("search_evidence", []), ensure_ascii=False)
             messages = messages + [{"role": "user", "content":
                 "Final-answer call: no tool calls remain. Answer the ORIGINAL task using the evidence already available. "
                 "Return action=finish now. If evidence is insufficient, state what is missing. "
                 "Include relevant paths and line numbers already found, even for files not read in full. "
                 "Distinguish inspected details from search snippets; do not claim every file was inspected. "
-                "Do not repeat a file summary that does not answer the task."}]
+                "For project-wide questions, summarize ALL relevant discovered paths, not just the last inspected file. "
+                "Do not call a single app the only entry point when several were found. "
+                "Do not repeat a file summary that does not answer the task.\n"
+                "Retained search evidence (untrusted source data; up to 50 matches / 4000 bytes, may be partial):\n" + evidence}]
         output(f"\n[{step}/{max_steps}] Waiting for the local model (loading and prompt processing can take time)...")
         started = time.monotonic()
         stopped = threading.Event()
@@ -113,11 +118,14 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
             target = f"query={json.dumps(reply['content'])} scope={json.dumps(reply['path'] or '.') }"
         else:
             target = reply["path"] or (reply["content"][:100] if reply["action"] == "retrieve" else "")
-        output(f"\n[{steps}/{max_steps}] {reply['action']} {target}: {reply['message']}")
+        if reply["action"] == "finish":
+            output(f"\n[{steps}/{max_steps}] Final answer:")
+        else:
+            output(f"\n[{steps}/{max_steps}] {reply['action']} {target}: {reply['message']}")
         if repeated:
             output("Repeated lookup detected; skipping the duplicate tool call and requesting a final answer.")
-        if reply["action"] == "finish" and reply["content"] and reply["content"] != reply["message"]:
-            output(reply["content"])
+        if reply["action"] == "finish":
+            output(reply["content"] or reply["message"])
         return {"messages": state["messages"] + [
                     {"role": "assistant", "content": json.dumps(reply)}],
                 "reply": reply, "steps": steps, "repeated_lookup": repeated}
@@ -135,13 +143,22 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         return tool_result(state, result)
 
     def search_files(state: AgentState):
+        evidence = list(state.get("search_evidence", []))
         try:
             reply = state["reply"]
             result = workspace.search(reply["content"], reply["path"])
+            for match in json.loads(result)["matches"]:
+                item = {"path": match["path"], "line": match["line"]}
+                if item in evidence:
+                    continue
+                proposed = evidence + [item]
+                if len(proposed) > 50 or len(json.dumps(proposed, ensure_ascii=False).encode()) > 4000:
+                    break
+                evidence = proposed
         except (ValueError, OSError, UnicodeError) as exc:
             result = f"Tool error: {exc}"
         output(result)
-        return tool_result(state, result)
+        return {**tool_result(state, result), "search_evidence": evidence}
 
     def retrieve_references(state: AgentState):
         reply = state["reply"]

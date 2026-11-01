@@ -94,11 +94,35 @@ class GraphTests(unittest.TestCase):
                 return action("search", content="FastAPI(")
 
         model = Model()
-        with patch.object(self.ws, "search", return_value="No matches") as search:
+        with patch.object(self.ws, "search", return_value='{"matches": []}') as search:
             result = run(model, self.ws, "Find entry points", max_steps=12, output=lambda _: None)
         self.assertEqual(result, 2)
         self.assertEqual(model.calls, 3)
         search.assert_called_once()
+
+    def test_final_answer_retains_all_search_paths_and_is_displayed_once(self):
+        for name in ("service_a/main.py", "service_b/main.py"):
+            target = Path(self.temp.name, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("app = FastAPI()\n")
+        captured = []
+        class Model:
+            def chat(self, messages, schema):
+                captured.append(messages)
+                if len(captured) == 1:
+                    return action("search", content="FastAPI(")
+                if len(captured) == 2:
+                    return action("read", "service_b/main.py")
+                return dict(action="finish", path="service_b/main.py", content="Both services expose apps.",
+                            message="Both services expose apps with constructors.")
+        output = []
+        result = run(Model(), self.ws, "Find all entry points", max_steps=3, output=output.append)
+        self.assertEqual(result, 0)
+        final_context = captured[-1][-1]["content"]
+        self.assertIn("service_a/main.py", final_context)
+        self.assertIn("service_b/main.py", final_context)
+        self.assertIn("ALL relevant discovered paths", final_context)
+        self.assertEqual(sum("Both services" in line for line in output), 1)
 
     def test_finish_on_last_allowed_action_succeeds(self):
         class Model:

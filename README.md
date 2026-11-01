@@ -185,6 +185,13 @@ If the model ignores the finish-only schema, the run exits incomplete without
 executing its proposed tool. This reserves time to answer; it cannot guarantee
 that the model's answer is correct or complete.
 
+Search paths and line numbers are also retained in a bounded evidence list
+(up to 50 matches / 4,000 bytes) and supplied again on the final reserved call.
+This keeps early discoveries available after older conversation content is trimmed.
+The evidence list is partial when its limits are reached and does not imply that
+every matching file was read in full. Final answers print once, without also
+printing the model's potentially repetitive progress narration.
+
 ## Search file contents
 
 ```sh
