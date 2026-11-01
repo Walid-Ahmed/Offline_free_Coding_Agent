@@ -13,7 +13,8 @@ from .test_runner import DEFAULT_IMAGE, command, run_tests
 SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {"action": {"type": "string", "enum": ["read", "search", "retrieve", "write", "run_tests", "finish"]},
-                   "path": {"type": "string"}, "content": {"type": "string"},
+                   "path": {"type": "string", "description": "Relative file/directory scope, or empty for whole-workspace search. Never a file-extension filter."},
+                   "content": {"type": "string", "description": "For search: exact literal source text only, e.g. FastAPI(. Never append .py or a glob. For finish: complete answer."},
                    "message": {"type": "string"}},
     "required": ["action", "path", "content", "message"],
 }
@@ -36,6 +37,9 @@ Do not finish with a progress update such as "retrieved" or "being finalized".
 For search, put a case-sensitive single-line literal query (at most 256 characters) in content.
 Set path to an empty string to search the workspace, or to a relative file/directory to narrow scope.
 Search returns bounded matches with paths, 1-based line numbers, and snippets; limits mean results may be incomplete.
+Search example for Python FastAPI entry points: {"action":"search","path":"","content":"FastAPI(","message":"Find app constructors"}.
+Search has no extension filter. Do not append .py, *.py, a regex, or natural language to a literal query.
+A no-match result applies only to the exact reported query and scope; it does not prove a framework is absent.
 For run_tests, set path and content to empty strings; user approval is required. Give a brief plan in message before your first action.
 You cannot run arbitrary commands, delete files, access hidden paths, or browse the internet.
 Inspect existing files before changing them. Only claim tests ran when the run_tests result supplies execution evidence.
@@ -103,7 +107,10 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                          if m["role"] == "assistant"), None)
         repeated = (reply["action"] in ("read", "search", "retrieve")
                     and previous is not None and action_key(reply) == action_key(previous))
-        target = reply["path"] or (reply["content"][:100] if reply["action"] in ("search", "retrieve") else "")
+        if reply["action"] == "search":
+            target = f"query={json.dumps(reply['content'])} scope={json.dumps(reply['path'] or '.') }"
+        else:
+            target = reply["path"] or (reply["content"][:100] if reply["action"] == "retrieve" else "")
         output(f"\n[{steps}/{max_steps}] {reply['action']} {target}: {reply['message']}")
         if repeated:
             output("Repeated lookup detected; skipping the duplicate tool call and requesting a final answer.")

@@ -89,7 +89,8 @@ class Workspace:
             candidates = [scope] if target.is_file() else self.files(scope)
         else:
             candidates = self.files()
-        result = {"matches": [], "files_searched": 0, "files_skipped": 0,
+        result = {"query": query, "scope": scope or ".", "literal": True,
+                  "matches": [], "files_searched": 0, "files_skipped": 0,
                   "limit_reached": False, "candidate_limit_reached": len(candidates) >= 1000}
         for name in candidates:
             try:
@@ -115,6 +116,10 @@ class Workspace:
                     result["matches"].pop()
                     result["limit_reached"] = True
                     return json.dumps(result, ensure_ascii=False)
+        if not result["matches"]:
+            result["note"] = ("No matches for this exact literal and scope among searched files. "
+                              "This does not establish that a framework is absent. "
+                              "Do not append file extensions or globs to a source-text query.")
         return json.dumps(result, ensure_ascii=False)
 
     def propose(self, name, content):

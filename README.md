@@ -163,6 +163,11 @@ The model can call `search` with the literal query in `content` and an optional 
 
 Results contain relative paths, 1-based line numbers, and up to 320 characters of text around the first match on each matching line. Search returns at most 50 matching lines and 16,000 bytes of JSON. It considers up to 1,000 eligible files per scope and skips hidden/excluded paths, symlinks, files over 64 KB, binary data, unreadable files, and invalid UTF-8. Narrow the scope when a limit is reported. `files_searched` and `files_skipped` describe attempted candidates; `limit_reached` and `candidate_limit_reached` flag potentially incomplete results. A no-match result only describes the files actually searched. Search uses the same ignore and exclusion policy as file listing and RAG.
 
+Search results also report the exact `query`, `scope`, and `literal: true`.
+Queries are source text, not filename filters: searching for `FastAPI(` finds
+constructors; `FastAPI(.py` searches for those exact characters and will usually
+find nothing. File extensions and globs must not be appended to the query.
+
 ## Run isolated project tests
 
 Start a local Docker Linux-container runtime and prepare the image once while online:

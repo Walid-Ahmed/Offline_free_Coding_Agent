@@ -69,6 +69,17 @@ class SearchTests(unittest.TestCase):
         result = self.search("needle")
         self.assertEqual(result["matches"], [])
         self.assertFalse(result["limit_reached"])
+        self.assertEqual(result["query"], "needle")
+        self.assertEqual(result["scope"], ".")
+        self.assertIn("does not establish", result["note"])
+
+    def test_fastapi_literal_is_not_an_extension_filter(self):
+        self.put("app/main.py", 'app = FastAPI(title="ShopSphere")\n')
+        correct = self.search("FastAPI(")
+        self.assertEqual(correct["matches"][0]["path"], "app/main.py")
+        malformed = self.search("FastAPI(.py")
+        self.assertEqual(malformed["matches"], [])
+        self.assertEqual(malformed["query"], "FastAPI(.py")
 
     def test_match_limit(self):
         self.put("code.py", "needle\n" * 70)
