@@ -263,6 +263,17 @@ python3 -m compileall -q offline_agent tests
 
 Tests include a simulated agent workflow and a real loopback HTTP fixture, without downloading a model.
 
+### Evaluate the local model
+
+To measure whether a prompt or tool change actually helps `qwen2.5-coder:7b`, run the fixed eval tasks against your local Ollama:
+
+```sh
+python3 -m offline_agent.evaluation
+python3 -m offline_agent.evaluation --only fix-low-stock --only last-product
+```
+
+[evals/tasks.json](evals/tasks.json) holds 12 tasks over the small [sample repository](evals/sample_repo): questions, a paged read of a 600-line file, entry-point discovery, a bug fix, a one-line change in a large file, and a new file. Each task runs on a fresh temporary copy, with writes auto-confirmed inside that copy and test runs declined. Regex checks score each answer or resulting file. The run prints a table of pass/fail, exit code, steps, tokens, and time, and writes the full report to `evals/results/latest.json`, which Git ignores. Like normal use, evaluation talks only to loopback Ollama. Compare reports before and after a change. Results vary between runs, so look at trends rather than one pass or fail. A live model smoke test is separate: run `--doctor`, then ask it to create a function in a disposable project, confirm its diff, and test the result.
+
 See [the implementation plan and roadmap](docs/PLAN.md) for architecture, acceptance criteria, and next steps. API integration follows [Ollama chat](https://docs.ollama.com/api/chat) and [structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
 
 Historical v0.1 validation is recorded in [the plan](docs/PLAN.md). Current inference is restricted to `qwen2.5-coder:7b`. Automated tests use fake model responses and a loopback HTTP fixture, so they do not establish coding quality on larger projects.

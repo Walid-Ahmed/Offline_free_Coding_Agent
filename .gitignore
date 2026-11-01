@@ -8,3 +8,5 @@ dist/
 .DS_Store
 # Personal knowledge documents stay local.
 knowledge/
+# Local eval reports.
+evals/results/
