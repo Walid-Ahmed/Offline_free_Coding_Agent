@@ -7,12 +7,16 @@ Version 0.1.0 — a small command-line coding agent that uses an installed local
 Requirements: Python 3.10+ and [Ollama](https://ollama.com/). Install Ollama and download a local coding model while connected to the internet. Model quality, speed, memory use, and license depend on your choice; start with a model that fits your device. The example tag below is configurable, not a hardware guarantee.
 
 ```sh
-ollama serve
+python3 scripts/start_ollama.py
 # In another terminal, while online:
 ollama pull qwen2.5-coder:7b
 ```
 
-Disable Ollama cloud features before starting its server, following [Ollama's local-only instructions](https://docs.ollama.com/faq). For example, set `OLLAMA_NO_CLOUD=1` in the server's environment. Then disconnect from the internet to use the installed model offline. The agent checks that the model is installed and rejects remote-backed model metadata; a loopback URL alone cannot guarantee how a separately configured server performs inference.
+The [startup script](scripts/start_ollama.py) sets `OLLAMA_NO_CLOUD=1` and binds the server to `127.0.0.1:11434`, following [Ollama's local-only instructions](https://docs.ollama.com/faq). Run it from this repository on macOS, Linux, or Windows (use `python` if that is your Python command). Leave that terminal open; Ctrl+C stops the server. Check its logs for `Ollama cloud disabled: true`.
+
+If Ollama is already running, quit its desktop app or stop its service first, then run the script. The script refuses to reuse an occupied port because a running server cannot inherit its environment settings. These settings apply to the server launched by the script; run the script each time you want to start it this way.
+
+After downloading a model, disconnect from the internet to use it offline. Disabling cloud features does not block model downloads or all network traffic. The agent checks that the model is installed and rejects remote-backed model metadata; a loopback URL alone cannot guarantee how a separately configured server performs inference.
 
 From this repository, no Python package installation is required:
 
