@@ -80,3 +80,21 @@ Validation: all 40 automated tests passed on Python 3.13.3, including literal ma
 Added local BM25 passage retrieval with citations, automatic task context, and a retrieve graph node. Ships a project-authored LangGraph guide and accepts user references under workspace/knowledge or an explicit --knowledge-base directory. No extra model, network client, persistent store, or vector database is added. Supported reference formats are Markdown, UTF-8 text, and reStructuredText. See KNOWLEDGE_BASE.md for bounds and setup.
 
 Validation: all 52 tests passed on Python 3.13.3. Coverage includes BM25 ranking, line citations, local document filtering and bounds, index refresh on a new task, initial retrieval context, explicit retrieve routing, and no network connections during reference loading/retrieval. The built wheel includes the bundled guide. A real local qwen2.5-coder:7b run retrieved a user policy through the tool, and a final-answer smoke test displayed the policy with the correct user/team.md:1-1 citation. Final answers now display content as well as the model's short status message.
+
+## Version 0.3.1: automatic repository RAG
+
+The CLI now includes the selected workspace's supported source code, documentation,
+and configuration/build files in the local BM25 knowledge base. Citations use repo/
+paths. User reference documents and the bundled guide remain available, with
+physical-path deduplication. Startup reports source counts and index limits.
+Approved agent writes rebuild the local index before the next retrieval. The same
+bounded limits apply across all roots; .gitignore support is still pending.
+
+Validation: all 60 automated tests passed on Python 3.13.3, including repository
+language coverage, source citations, default CLI indexing, deduplication, filtering,
+refresh after approved writes, and no network connections during indexing. A live
+local 7b CLI run answered shipping_total(10) as 15 and cited repo/orders.py:1-2.
+An earlier live run repeated actions until its limit; the successful run also
+proposed an unnecessary preview edit before finishing. Prompt guidance now tells
+the model to finish questions from available context and reserve writes for change
+requests. These smoke tests do not establish general model reliability.

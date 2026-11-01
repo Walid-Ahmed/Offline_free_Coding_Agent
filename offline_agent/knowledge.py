@@ -8,6 +8,15 @@ from pathlib import Path
 from .workspace import Workspace
 
 EXTENSIONS = {".md", ".txt", ".rst"}
+CODE_EXTENSIONS = EXTENSIONS | {
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
+    ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt",
+    ".kts", ".scala", ".sh", ".bash", ".zsh", ".ps1", ".sql", ".html",
+    ".css", ".scss", ".vue", ".svelte", ".json", ".yaml", ".yml", ".toml",
+    ".ini", ".cfg", ".xml", ".graphql", ".gql", ".proto", ".r", ".lua",
+    ".ex", ".exs", ".erl", ".hs", ".clj", ".dart",
+}
+CODE_NAMES = {"Dockerfile", "Makefile", "CMakeLists.txt", "Justfile", "Gemfile"}
 
 
 def tokens(text):
@@ -34,26 +43,36 @@ def chunks(text):
 
 
 class KnowledgeBase:
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, *, workspace=None):
+        self.directory = directory
+        self.workspace_root = workspace.root if isinstance(workspace, Workspace) else workspace
         self.documents = 0
+        self.documents_by_source = {"builtin": 0, "user": 0, "repo": 0}
         self.skipped = 0
         self.limited = False
         self.entries = []
         self.frequencies = Counter()
-        roots = [("builtin", Path(__file__).parent / "references")]
+        roots = [("builtin", Path(__file__).parent / "references", EXTENSIONS)]
         if directory is not None:
             directory = Path(directory).expanduser()
             if directory.exists():
-                roots.append(("user", directory))
+                roots.append(("user", directory, EXTENSIONS))
             else:
                 raise ValueError(f"Knowledge directory does not exist: {directory}")
+        if self.workspace_root is not None:
+            roots.append(("repo", self.workspace_root, CODE_EXTENSIONS))
         total_bytes = 0
-        for label, root in roots:
+        seen = set()
+        for label, root, extensions in roots:
             workspace = Workspace(root)
             names = workspace.files()
             self.limited |= len(names) >= 1000
             for name in names:
-                if Path(name).suffix.lower() not in EXTENSIONS:
+                if (Path(name).suffix.lower() not in extensions
+                        and not (label == "repo" and Path(name).name in CODE_NAMES)):
+                    continue
+                identity = workspace.path(name).resolve()
+                if identity in seen:
                     continue
                 if self.documents >= 200 or len(self.entries) >= 4000:
                     self.limited = True
@@ -69,6 +88,8 @@ class KnowledgeBase:
                     continue
                 total_bytes += size
                 self.documents += 1
+                self.documents_by_source[label] += 1
+                seen.add(identity)
                 for start, end, passage in chunks(text):
                     counts = Counter(tokens(passage))
                     if not counts:
@@ -82,6 +103,10 @@ class KnowledgeBase:
                     self.frequencies.update(counts.keys())
         self.average_length = (sum(e["length"] for e in self.entries) / len(self.entries)
                                if self.entries else 1)
+
+    def refresh(self):
+        """Rebuild the bounded local snapshot after an agent-approved write."""
+        self.__init__(self.directory, workspace=self.workspace_root)
 
     def retrieve(self, query):
         if not isinstance(query, str) or not query.strip() or len(query) > 1000:
@@ -103,6 +128,7 @@ class KnowledgeBase:
                 scored.append((score, entry))
         scored.sort(key=lambda pair: (-pair[0], pair[1]["source"], pair[1]["start_line"]))
         result = {"results": [], "documents": self.documents, "chunks": count,
+                  "documents_by_source": self.documents_by_source,
                   "skipped_documents": self.skipped, "index_limited": self.limited,
                   "results_limited": len(scored) > 4}
         for score, entry in scored[:4]:

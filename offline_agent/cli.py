@@ -27,9 +27,13 @@ def main(argv=None):
             return 0
         workspace = Workspace(args.workspace)
         references = Path(args.knowledge_base).expanduser() if args.knowledge_base else workspace.root / "knowledge"
-        knowledge = KnowledgeBase(references if args.knowledge_base or references.exists() else None)
-        print(f"Knowledge base: {knowledge.documents} local documents, {len(knowledge.entries)} chunks. "
+        knowledge = KnowledgeBase(references if args.knowledge_base or references.exists() else None,
+                                  workspace=workspace)
+        print(f"Knowledge base: {knowledge.documents_by_source['repo']} repository files, "
+              f"{knowledge.documents_by_source['user']} user references, {len(knowledge.entries)} chunks. "
               "Add your own .md, .txt, or .rst references to " + str(references))
+        if knowledge.limited:
+            print("Index limits reached; retrieval covers only part of the available files. Use search/read for more.")
         print(f"Workspace: {workspace.root}\nFile edits: {'confirm each write' if args.apply else 'preview only'}")
         return run(model, workspace, args.task, apply=args.apply, max_steps=args.max_steps, knowledge=knowledge,
                    confirm=lambda path: input(f"Write {path}? [y/N] ").strip().lower() == "y",

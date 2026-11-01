@@ -1,6 +1,6 @@
 # Offline Free Coding Agent
 
-Version 0.3.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
+Version 0.3.1 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. LangGraph orchestrates the workflow locally; model requests go directly to Ollama. LangSmith tracing is explicitly disabled during agent runs.
 
 ## Quick start
 
@@ -74,14 +74,20 @@ Use `--endpoint http://127.0.0.1:11434` for a different local port and `--max-st
 
 ## Local reference knowledge base (RAG)
 
-**You can add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too.
+The repository selected by `--workspace` is automatically indexed for RAG. The agent retrieves relevant source code, README/documentation, and common configuration/build files before answering, with citations such as `repo/src/orders.py:1-25`. No separate indexing command is needed.
+
+```sh
+offline-agent --workspace /path/to/repo 'Explain how order validation works'
+```
+
+**You can also add your own reference documents.** Put `.md`, `.txt`, or `.rst` files in your project's `knowledge/` folder, or use `--knowledge-base /path/to/references`. A short LangGraph guide is included; you can add locally saved manual pages too.
 
 ```sh
 offline-agent --workspace /path/to/project --knowledge-base /path/to/references \
   'Use my references to explain LangGraph conditional edges'
 ```
 
-The agent retrieves relevant passages automatically and can call `retrieve` for more, with source and line citations. Indexing and retrieval run entirely on your device using BM25 keyword ranking. No extra model, internet access, embeddings, or vector database is needed. See [how to add manuals and your own references](docs/KNOWLEDGE_BASE.md) for supported formats, limits, and examples.
+The agent retrieves relevant passages automatically and can call `retrieve` for more, with source and line citations. Indexing and retrieval run entirely on your device using BM25 keyword ranking. Startup reports the repository-file count and warns if index limits were reached. The index refreshes after an approved agent write and at the start of each new task. No extra model, internet access, embeddings, or vector database is needed. See [how to add manuals and your own references](docs/KNOWLEDGE_BASE.md) for supported formats, limits, and examples.
 
 ## Search file contents
 

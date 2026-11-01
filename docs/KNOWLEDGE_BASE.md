@@ -1,10 +1,45 @@
-# Add your own reference documents
+# Repository RAG and your own reference documents
 
 The agent has a local reference knowledge base. You can add manuals, team coding
 standards, architecture notes, API descriptions, and worked examples. Retrieval
 adds relevant passages to the model's context; it does not retrain the model.
 No URLs are fetched, no embedding model is downloaded, and indexing never calls
 Ollama or any network service. qwen2.5-coder:7b remains the only model.
+
+## Automatic repository RAG
+
+Point `--workspace` at a local repository:
+
+```sh
+offline-agent --workspace /path/to/repo 'Explain how authentication works'
+```
+
+No copy step or separate index command is required. The selected repository's
+supported source code and text documentation are automatically indexed alongside
+the bundled guide and your extra references. The initial task retrieves relevant
+passages; the model can call `retrieve` for more. Code citations use a `repo/`
+prefix, for example `repo/src/auth.py:1-30`. Reference documents under your chosen
+knowledge directory keep the `user/` prefix; the same physical file is not indexed
+twice. Startup reports repository and reference counts and warns about index limits.
+
+Supported code includes Python, JavaScript/TypeScript, Go, Rust, Java, C/C++, C#,
+Ruby, PHP, Swift, Kotlin, shell scripts, SQL, HTML/CSS, Vue/Svelte, and other common
+text source formats. Common JSON/YAML/TOML/XML configuration files and build files
+such as Dockerfile and Makefile are included. See CODE_EXTENSIONS and CODE_NAMES
+in offline_agent/knowledge.py for the exact set. Arbitrary unknown extensions,
+images, compiled artifacts, and notebooks are not included.
+
+This is a bounded snapshot, not a guarantee every repository file is indexed.
+The existing hidden-path, excluded-directory, UTF-8, file-size, and global index
+limits still apply. Indexing does not yet honor `.gitignore`; eligible visible
+files may contain private data. Only select repositories you intend to expose to
+your local model. Larger repositories may need `search`/`read` for files outside
+the index. A directory need not have Git metadata to work.
+
+The index rebuilds after an agent-approved file write, so subsequent retrieval
+uses the updated code. Other edits made while a task runs are picked up on the
+next task (there is no filesystem watcher). Earlier conversation excerpts remain
+snapshots; retrieve or read again when validating changed code.
 
 ## Add documents
 
@@ -72,15 +107,15 @@ unpublished.
 
 ## How local RAG works
 
-At startup, the agent reads eligible reference files and builds an in-memory BM25
+At startup, the agent reads eligible repository and reference files and builds an in-memory BM25
 keyword index. It breaks documents into passages of up to 30 lines / about 1,800
 characters and ranks them by query term overlap and rarity. It returns up to four
 passages with citations and a 16 KB JSON cap. There are no embeddings or semantic
 vector search, so queries using the document's actual terminology work best.
 
-The index is rebuilt for each new task, so edits and deletions are picked up on
-the next run. No database, persistent index, account, or API key is required.
-Indexing considers at most 1,000 eligible files per root, 200 documents total,
+The index is rebuilt for each new task and after approved agent writes. External
+edits and deletions are picked up on the next run. No database, persistent index, account, or API key is required.
+Indexing considers at most 1,000 candidate files per root, 200 documents total across references and repository code,
 5 MB of document text, and 4,000 passages. Hidden/excluded paths, symlinks, binary
 files, invalid UTF-8, and files over 64 KB are excluded. Metadata flags report
 index/result limits; a no-match result is not proof the full library has no answer.
