@@ -77,7 +77,15 @@ class TracingTests(unittest.TestCase):
         client.assert_called_once_with(api_key="test-key", hide_inputs=False, hide_outputs=False)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_missing_key_fails_before_model_access(self):
-        with patch("offline_agent.cli.Ollama") as model, contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["--langsmith-tracing", "Explain"]), 1)
-        model.assert_not_called()
+    def test_missing_or_blank_key_warns_and_continues_without_tracing(self):
+        for key in (None, "", "   "):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as root, \
+                 patch.dict(os.environ, {} if key is None else {"LANGSMITH_API_KEY": key}, clear=True), \
+                 patch("langsmith.Client") as client, patch("offline_agent.cli.Ollama") as model, \
+                 patch("offline_agent.cli.run", return_value=0) as agent, \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(main(["--workspace", root, "--langsmith-tracing", "Explain"]), 0)
+                self.assertIn("Continuing with LangSmith tracing disabled", error.getvalue())
+                client.assert_not_called()
+                model.return_value.check_model.assert_called_once()
+                self.assertIsNone(agent.call_args.kwargs["tracing_client"])

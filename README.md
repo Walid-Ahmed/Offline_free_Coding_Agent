@@ -73,6 +73,9 @@ internet-browsing tool is added. Without the flag, no tracing client is created.
 
 Set `LANGSMITH_API_KEY` securely in your terminal environment, then run:
 
+If the key is missing or blank, CodeHaven prints a warning and continues the task
+with tracing disabled; no tracing client is created.
+
 ```sh
 codehaven --langsmith-tracing --langsmith-project codehaven \
   --workspace /path/to/project 'Explain the project'

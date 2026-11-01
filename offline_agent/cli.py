@@ -45,15 +45,18 @@ def main(argv=None):
     try:
         tracing_client = None
         if args.langsmith_tracing:
-            if not os.environ.get("LANGSMITH_API_KEY"):
-                raise ValueError("--langsmith-tracing requires LANGSMITH_API_KEY in your environment")
-            from langsmith import Client
-            tracing_client = Client(api_key=os.environ["LANGSMITH_API_KEY"],
-                                    hide_inputs=not args.langsmith_include_content,
-                                    hide_outputs=not args.langsmith_include_content)
-            print("LangSmith tracing enabled: run metadata and errors leave this device. "
-                  + ("Prompts, code, and tool results are included." if args.langsmith_include_content
-                     else "Trace inputs and outputs are hidden; errors and metadata can still contain sensitive details."), flush=True)
+            api_key = os.environ.get("LANGSMITH_API_KEY", "").strip()
+            if not api_key:
+                print("Warning: LANGSMITH_API_KEY is missing. Continuing with LangSmith tracing disabled.",
+                      file=sys.stderr, flush=True)
+            else:
+                from langsmith import Client
+                tracing_client = Client(api_key=api_key,
+                                        hide_inputs=not args.langsmith_include_content,
+                                        hide_outputs=not args.langsmith_include_content)
+                print("LangSmith tracing enabled: run metadata and errors leave this device. "
+                      + ("Prompts, code, and tool results are included." if args.langsmith_include_content
+                         else "Trace inputs and outputs are hidden; errors and metadata can still contain sensitive details."), flush=True)
         model = Ollama(endpoint=args.endpoint, max_output_tokens=args.max_output_tokens,
                        prompt_budget=args.prompt_budget)
         model.check_model()
