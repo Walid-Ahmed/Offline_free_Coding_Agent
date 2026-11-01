@@ -21,7 +21,7 @@ Python CLI --> bounded agent loop --> local Ollama HTTP API --> installed model
 ```
 
 1. Start with Python 3.10+ and no runtime packages for a portable baseline.
-2. Use Ollama as the first inference adapter, with an explicit model option.
+2. Use Ollama as the first inference adapter, with the model fixed to `qwen2.5-coder:7b` and no fallback.
 3. Enumerate bounded project context; let the model select files to read.
 4. Use a JSON action protocol independent of native tool-calling support.
 5. Show diffs and require per-file consent in write mode.
@@ -39,7 +39,7 @@ Prioritize after trying v0.1 on small real repositories:
 - Add focused search, context budgeting, and recovery from malformed model output.
 - Add multi-file proposals, atomic writes, backups, and rollback.
 - Add smaller patch edits with stale-content checks.
-- Benchmark available local models on representative coding tasks and document tested hardware.
+- Benchmark `qwen2.5-coder:7b` on representative coding tasks and document tested hardware.
 
 ## Version 0.3: verification loop
 
@@ -54,3 +54,5 @@ Consider llama.cpp or another local inference adapter, a desktop UI, resumable s
 Automated tests exercise simulated model actions and a local HTTP server. See the repository history and CI for results. Actual local inference quality and hardware requirements are not established by these tests.
 
 Local validation on November 1, 2026: all 9 automated tests passed on Python 3.13.3. The installed `qwen2.5-coder:14b` model passed the doctor check, proposed `hello.py` in preview mode, and completed a separate confirmed-write run in a temporary directory. The generated addition function passed two manually executed assertions. This is a small smoke test, not a general coding-quality benchmark. Python 3.10 and Linux checks are configured in CI but were not run locally.
+
+Current model policy: use only `qwen2.5-coder:7b`. The earlier 14b smoke test above is historical and does not validate the current 7b configuration. The CLI no longer accepts a model-selection option.

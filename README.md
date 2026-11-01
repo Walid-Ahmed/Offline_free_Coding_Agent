@@ -1,10 +1,10 @@
 # Offline Free Coding Agent
 
-Version 0.1.0 — a small command-line coding agent that uses an installed local Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. The Python application uses only the standard library at runtime.
+Version 0.1.0 — a small command-line coding agent that uses only the installed local `qwen2.5-coder:7b` Ollama model. Ask it to inspect a project, explain code, or propose file changes. No cloud API key, cloud fallback, telemetry, or automatic downloads. The Python application uses only the standard library at runtime.
 
 ## Quick start
 
-Requirements: Python 3.10+ and [Ollama](https://ollama.com/). Install Ollama and download a local coding model while connected to the internet. Model quality, speed, memory use, and license depend on your choice; start with a model that fits your device. The example tag below is configurable, not a hardware guarantee.
+Requirements: Python 3.10+ and [Ollama](https://ollama.com/). Install Ollama and download `qwen2.5-coder:7b` while connected to the internet. This is the only supported model; there is no model-selection option or fallback. Speed and memory use depend on your device.
 
 ```sh
 python3 scripts/start_ollama.py
@@ -21,8 +21,8 @@ After downloading a model, disconnect from the internet to use it offline. Disab
 From this repository, no Python package installation is required:
 
 ```sh
-python3 -m offline_agent --model qwen2.5-coder:7b --doctor
-python3 -m offline_agent --model qwen2.5-coder:7b \
+python3 -m offline_agent --doctor
+python3 -m offline_agent \
   --workspace /absolute/path/to/project \
   'Explain this project and suggest a small improvement'
 ```
@@ -30,7 +30,7 @@ python3 -m offline_agent --model qwen2.5-coder:7b \
 By default, changes are previews. To write files, enable `--apply` and type `y` at each file prompt:
 
 ```sh
-python3 -m offline_agent --model qwen2.5-coder:7b \
+python3 -m offline_agent \
   --workspace /absolute/path/to/project --apply \
   'Read the calculator module and add input validation'
 ```

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from offline_agent.agent import run
-from offline_agent.model import Ollama
+from offline_agent.model import MODEL, Ollama
 from offline_agent.workspace import Workspace
 
 
@@ -84,9 +84,15 @@ class TransportTests(unittest.TestCase):
         for endpoint in ["https://example.com", "http://localhost:11434", "http://10.0.0.1",
                          "http://127.0.0.1/evil", "http://user@127.0.0.1", "http://127.0.0.1:bad"]:
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
-                Ollama("local", endpoint)
+                Ollama(endpoint=endpoint)
         with self.assertRaises(ValueError):
             Ollama("model:cloud")
+
+    def test_only_selected_model_supported(self):
+        self.assertEqual(Ollama().model, "qwen2.5-coder:7b")
+        for name in ["other", "qwen2.5-coder:14b", "qwen2.5-coder:latest"]:
+            with self.subTest(model=name), self.assertRaises(ValueError):
+                Ollama(name)
 
     def test_real_http_contract(self):
         calls = []
@@ -96,7 +102,7 @@ class TransportTests(unittest.TestCase):
                 pass
 
             def do_GET(self):
-                self.send_payload({"models": [{"name": "test:latest"}]})
+                self.send_payload({"models": [{"name": MODEL}]})
 
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -115,10 +121,11 @@ class TransportTests(unittest.TestCase):
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
-                client = Ollama("test", f"http://127.0.0.1:{server.server_port}")
+                client = Ollama(endpoint=f"http://127.0.0.1:{server.server_port}")
                 client.check_model()
                 self.assertEqual(client.chat([], {} )["action"], "finish")
                 self.assertFalse(calls[-1][1]["stream"])
+                self.assertTrue(all(payload["model"] == MODEL for _, payload in calls))
             finally:
                 server.shutdown()
                 worker.join()

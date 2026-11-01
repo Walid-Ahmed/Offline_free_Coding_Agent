@@ -5,6 +5,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+MODEL = "qwen2.5-coder:7b"
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -12,7 +14,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class Ollama:
-    def __init__(self, model, endpoint="http://127.0.0.1:11434", timeout=180):
+    def __init__(self, model=MODEL, endpoint="http://127.0.0.1:11434", timeout=180):
         url = urllib.parse.urlsplit(endpoint)
         try:
             local = ipaddress.ip_address(url.hostname).is_loopback
@@ -22,8 +24,8 @@ class Ollama:
         if (not local or url.scheme != "http" or url.username or url.password
                 or url.path not in ("", "/") or url.query or url.fragment):
             raise ValueError("Endpoint must be an HTTP numeric loopback origin, e.g. http://127.0.0.1:11434")
-        if not model.strip() or model.endswith(":cloud") or "cloud" in model.lower():
-            raise ValueError("Choose an installed local model, not a cloud model")
+        if model != MODEL:
+            raise ValueError(f"Only {MODEL} is supported")
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.timeout = timeout
@@ -48,8 +50,8 @@ class Ollama:
     def check_model(self):
         models = self.request("/api/tags").get("models", [])
         names = {m.get("name") for m in models}
-        if self.model not in names and self.model + ":latest" not in names:
-            raise ValueError(f"Model {self.model!r} is not installed. Install it before going offline.")
+        if self.model not in names:
+            raise ValueError(f"Model {self.model!r} is not installed. Run: ollama pull {MODEL} while online.")
         info = self.request("/api/show", {"model": self.model})
         if info.get("remote_host") or info.get("remote_model"):
             raise ValueError("Remote-backed models are disabled")
