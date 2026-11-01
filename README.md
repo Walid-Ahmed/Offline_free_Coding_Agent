@@ -185,12 +185,42 @@ If the model ignores the finish-only schema, the run exits incomplete without
 executing its proposed tool. This reserves time to answer; it cannot guarantee
 that the model's answer is correct or complete.
 
-Search paths and line numbers are also retained in a bounded evidence list
-(up to 50 matches / 4,000 bytes) and supplied again on the final reserved call.
-This keeps early discoveries available after older conversation content is trimmed.
-The evidence list is partial when its limits are reached and does not imply that
-every matching file was read in full. Final answers print once, without also
-printing the model's potentially repetitive progress narration.
+Search, read, and retrieved evidence is retained with paths, line ranges, short
+snippets, and heuristic labels (`service`, `test`, `stub`, `reference`, `source`).
+The bounded list holds up to 50 records / 4,000 bytes; snippets are dropped before
+citations when space runs low. It is supplied again on the final reserved call,
+so older discoveries survive conversation trimming. A successful file write drops
+that file's prior evidence. Classification is a hint, not a deployment guarantee.
+
+Explicit requests to find/list/identify FastAPI entry points use a local discovery
+node: search broadly for the exact literal `FastAPI(`, classify matches, then
+request one cited summary. It scans eligible files beyond the RAG document limit,
+within the search tool's bounds, and avoids a model-driven read of every match.
+Edit requests and other tasks retain the normal tool workflow. This first planner
+does not detect aliased constructors, application factories without this literal,
+or other frameworks. It never proves that every entry point has been found.
+
+Final-answer checks require observed path:line citations when evidence exists,
+reject unsupported citation ranges, and flag a singular-entry-point claim when
+multiple service candidates were found. Planned discovery also checks that each
+retained service candidate has a supported citation. Answers with detected gaps
+are displayed as **unverified** and exit with code 2. These are bounded syntax and
+coverage checks, not semantic verification of every claim; evidence can be partial.
+Final answers print once, without duplicating progress narration.
+
+Discovery summaries use a short dedicated prompt and a bounded response schema.
+Checks also flag repeated substantial lines and test/stub paths listed under a
+conflicting recognized heading. If a discovery summary fails checks, it is withheld
+and replaced with the classified source inventory plus the specific warnings.
+The raw model reply remains in run state (and opted-in content traces); the source
+inventory does not silently turn a rejected model summary into a verified answer.
+
+After each model response, CodeHaven shows the timing fields Ollama supplies:
+model loading, prompt evaluation, generation and total seconds, prompt/generated
+token counts, and generation tokens per second. `cached_tokens` is a reported
+count when present, or `null` when Ollama does not report it. Missing cache metrics
+never imply a cache hit. Timings are per request, not an end-to-end task benchmark.
+See the [Ollama response fields](https://docs.ollama.com/api/chat).
 
 ## Search file contents
 

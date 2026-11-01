@@ -8,6 +8,26 @@ import urllib.request
 MODEL = "qwen2.5-coder:7b"
 
 
+def response_metrics(result):
+    metrics = {}
+    for source, label in (("load_duration", "load_seconds"), ("prompt_eval_duration", "prompt_seconds"),
+                          ("eval_duration", "generation_seconds"), ("total_duration", "total_seconds")):
+        value = result.get(source)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+            metrics[label] = round(value / 1_000_000_000, 3)
+    for source, label in (("prompt_eval_count", "prompt_tokens"), ("eval_count", "generated_tokens"),
+                          ("prompt_eval_cached_count", "cached_tokens")):
+        value = result.get(source)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            metrics[label] = value
+    duration = result.get("eval_duration")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0 and "generated_tokens" in metrics:
+        metrics["tokens_per_second"] = round(metrics["generated_tokens"] / (result["eval_duration"] / 1e9), 2)
+    if metrics and "cached_tokens" not in metrics:
+        metrics["cached_tokens"] = None
+    return metrics
+
+
 def compact_messages(messages, budget=12_000):
     """Keep a stable prefix until bounded history requires compaction.
 
@@ -56,6 +76,7 @@ class Ollama:
             raise ValueError("--prompt-budget must be between 8000 and 64000 bytes")
         self.max_output_tokens = max_output_tokens
         self.prompt_budget = prompt_budget
+        self.last_metrics = {}
         url = urllib.parse.urlsplit(endpoint)
         try:
             local = ipaddress.ip_address(url.hostname).is_loopback
@@ -98,11 +119,13 @@ class Ollama:
             raise ValueError("Remote-backed models are disabled")
 
     def chat(self, messages, schema):
+        self.last_metrics = {}
         result = self.request("/api/chat", {"model": self.model, "messages": compact_messages(messages, self.prompt_budget),
                               "stream": False, "format": schema,
                               "keep_alive": "30m",
                               "options": {"temperature": 0, "num_predict": self.max_output_tokens,
                                           "num_ctx": max(8192, self.prompt_budget // 2 + self.max_output_tokens)}})
+        self.last_metrics = response_metrics(result)
         if result.get("done_reason") == "length":
             raise ValueError("Model reached the response token limit; no partial action was executed. "
                              "Use a smaller task or increase --max-output-tokens.")

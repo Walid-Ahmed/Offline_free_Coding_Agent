@@ -97,7 +97,7 @@ class KnowledgeTests(unittest.TestCase):
             def chat(self, messages, schema):
                 calls.append(messages)
                 return {"action": "retrieve" if len(calls) == 1 else "finish", "path": "",
-                        "content": "uniqueprojectpattern", "message": "Consult references"}
+                        "content": "uniqueprojectpattern" if len(calls) == 1 else "Validate input before storage [user/guide.md:1].", "message": "Consult references"}
 
         result = run(Model(), Workspace(self.root), "Explain uniqueprojectpattern",
                      knowledge=KnowledgeBase(self.root), output=lambda _: None)

@@ -1,0 +1,127 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from offline_agent.agent import run
+from offline_agent.evidence import classify, retain, check_answer, discovery_task
+from offline_agent.model import response_metrics
+from offline_agent.workspace import Workspace
+
+
+class EvidenceTests(unittest.TestCase):
+    def test_classification_distinguishes_services_tests_stubs_and_docs(self):
+        for path, expected in (("svc/app/main.py", "service"), ("tests/test_api.py", "test"),
+                               ("scripts/inventory_stub.py", "stub"), ("README.md", "reference")):
+            self.assertEqual(classify(path, "app = FastAPI()"), expected)
+
+    def test_bounded_memory_keeps_snippets_and_prioritizes_citations(self):
+        matches = [dict(path=f"services/service_{i}/app/main.py", line=10, text="app = FastAPI() " * 30) for i in range(80)]
+        evidence, limited = retain([], matches)
+        self.assertTrue(limited)
+        self.assertLessEqual(len(evidence), 50)
+        self.assertLessEqual(len(json.dumps(evidence, ensure_ascii=False).encode()), 4000)
+        self.assertTrue(all(row['kind'] == 'service' for row in evidence))
+        self.assertTrue(all('snippet' in row for row in evidence))
+
+    def test_supported_citations_missing_coverage_and_single_app_contradiction(self):
+        evidence, _ = retain([], [dict(path='a/app/main.py', line=10, text='FastAPI('),
+                                   dict(path='b/app/main.py', line=20, text='FastAPI(')])
+        good = 'Apps: [a/app/main.py:10] and [repo/b/app/main.py:20].'
+        self.assertEqual(check_answer(good, evidence, discovery=True), [])
+        issues = check_answer('The FastAPI entry point is a/app/main.py [a/app/main.py:10].', evidence, discovery=True)
+        self.assertTrue(any('single' in issue for issue in issues))
+        self.assertTrue(any('Missing' in issue for issue in issues))
+        self.assertTrue(any('not supported' in issue for issue in check_answer('[a/app/main.py:999]', evidence)))
+        self.assertTrue(any('require' in issue for issue in check_answer('It has apps.', evidence)))
+        duplicate_labels = [dict(path='repo/a/app/main.py', line=10, kind='service'),
+                            dict(path='a/app/main.py', line=10, kind='service')]
+        self.assertEqual(check_answer('The FastAPI entry point is [a/app/main.py:10].', duplicate_labels), [])
+
+    def test_discovery_does_not_intercept_edits_or_unrelated_tasks(self):
+        self.assertTrue(discovery_task('Find the FastAPI entry points. Do not modify files.'))
+        self.assertFalse(discovery_task('Find and fix FastAPI entry points'))
+        self.assertFalse(discovery_task('Explain how FastAPI works'))
+
+    def test_real_model_failure_pattern_is_rejected_and_inventory_is_used(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name in ('catalog/app/main.py', 'orders/app/main.py', 'tests/test_api.py'):
+                path = Path(root, name); path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('from fastapi import FastAPI\napp = FastAPI()\n')
+            bad_answer = ('Service candidates:\n- catalog/app/main.py:2\n- orders/app/main.py:2\n'
+                          '- tests/test_api.py:2\n\n' +
+                          'Limited coverage; evidence does not include all potential entry points.\n' * 3)
+            class Model:
+                def chat(self, messages, schema):
+                    return dict(action='finish', path='', message='Discovery summary', content=bad_answer)
+            output = []
+            result = run(Model(), Workspace(root), 'Find all FastAPI entry points', output=output.append)
+            self.assertEqual(result, 2)
+            self.assertNotIn(bad_answer, output)
+            self.assertTrue(any('Classification mismatch' in line for line in output))
+            self.assertTrue(any('repeats' in line for line in output))
+            self.assertTrue(any('Test candidates:\n- [tests/test_api.py:2]' in line for line in output))
+
+    def test_discovery_searches_once_then_summarizes_without_per_file_reads(self):
+        with tempfile.TemporaryDirectory() as root:
+            for path in ('one/app/main.py', 'two/app/main.py', 'tests/test_api.py', 'scripts/stub.py'):
+                file = Path(root, path); file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text('app = FastAPI()\n')
+            workspace = Workspace(root)
+            calls = []
+            class Model:
+                def chat(self, messages, schema):
+                    calls.append((messages, schema))
+                    return dict(action='finish', path='', message='Done',
+                                content='Apps: [one/app/main.py:1] [two/app/main.py:1]. Tests and stubs are separate candidates.')
+            with patch.object(workspace, 'search', wraps=workspace.search) as search:
+                result = run(Model(), workspace, 'Find all FastAPI entry points', max_steps=4, output=lambda _: None)
+            self.assertEqual(result, 0)
+            search.assert_called_once_with('FastAPI(')
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][1]['properties']['action']['enum'], ['finish'])
+            self.assertIn('"kind": "test"', calls[0][0][-1]['content'])
+            self.assertIn('"kind": "stub"', calls[0][0][-1]['content'])
+
+    def test_metrics_rates_cache_unavailable_and_zero_duration(self):
+        result = response_metrics(dict(load_duration=1_000_000_000, prompt_eval_duration=2_000_000_000,
+                                       eval_duration=4_000_000_000, eval_count=20, prompt_eval_count=100,
+                                       prompt_eval_cached_count=80))
+        self.assertEqual(result['load_seconds'], 1)
+        self.assertEqual(result['prompt_seconds'], 2)
+        self.assertEqual(result['tokens_per_second'], 5)
+        self.assertEqual(result['cached_tokens'], 80)
+        self.assertIsNone(response_metrics(dict(eval_count=0, eval_duration=0))['cached_tokens'])
+        self.assertNotIn('tokens_per_second', response_metrics(dict(eval_count=0, eval_duration=0)))
+        self.assertEqual(response_metrics({}), {})
+        self.assertEqual(response_metrics({'eval_duration': 'unknown', 'eval_count': True}), {})
+
+    def test_bad_discovery_answer_is_flagged_and_exits_unverified(self):
+        with tempfile.TemporaryDirectory() as root:
+            for path in ('a/app/main.py', 'b/app/main.py'):
+                file = Path(root, path); file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text('app = FastAPI()\n')
+            class Model:
+                last_metrics = {'load_seconds': 0.1, 'cached_tokens': None}
+                def chat(self, messages, schema):
+                    return dict(action='finish', path='', message='Done',
+                                content='The FastAPI entry point is a/app/main.py [a/app/main.py:999].')
+            output = []
+            status = run(Model(), Workspace(root), 'Find all FastAPI entry points', output=output.append)
+            self.assertEqual(status, 2)
+            self.assertTrue(any('unverified' in line for line in output))
+            self.assertTrue(any('multiple service' in line for line in output))
+            self.assertTrue(any('not supported' in line for line in output))
+            self.assertTrue(any('Ollama metrics:' in line for line in output))
+
+    def test_reported_metrics_are_visible_when_response_hits_token_limit(self):
+        class Model:
+            last_metrics = {'generated_tokens': 1024, 'generation_seconds': 90}
+            def chat(self, messages, schema):
+                raise ValueError('Model reached the response token limit')
+        with tempfile.TemporaryDirectory() as root:
+            output = []
+            with self.assertRaisesRegex(ValueError, 'token limit'):
+                run(Model(), Workspace(root), 'Explain', output=output.append)
+            self.assertTrue(any('"generated_tokens": 1024' in line for line in output))

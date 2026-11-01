@@ -112,7 +112,7 @@ class SearchTests(unittest.TestCase):
                 calls.append(messages)
                 first = len(calls) == 1
                 return {"action": "search" if first else "finish", "path": "",
-                        "content": "needle" if first else "", "message": "Find needle"}
+                        "content": "needle" if first else "Found needle [code.py:1].", "message": "Find needle"}
 
         self.assertEqual(run(Model(), self.ws, "Find needle", output=lambda _: None), 0)
         self.assertIn('"path": "code.py"', calls[1][-1]["content"])

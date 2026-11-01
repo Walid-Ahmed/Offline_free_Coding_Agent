@@ -46,7 +46,7 @@ class GraphTests(unittest.TestCase):
         class Model:
             def chat(self, messages, schema):
                 calls.append(messages)
-                return action("read", "code.py") if len(calls) == 1 else action("finish")
+                return action("read", "code.py") if len(calls) == 1 else action("finish", content="Value is 42 [code.py:1].")
 
         self.assertEqual(run(Model(), self.ws, "Inspect code", output=lambda _: None), 0)
         self.assertEqual(len(calls), 2)
@@ -74,7 +74,7 @@ class GraphTests(unittest.TestCase):
                 calls.append((messages, schema))
                 if len(calls) <= 2:
                     return action("read", "code.py", f"unused {len(calls)}")
-                return action("finish", content="The value is 42.")
+                return action("finish", content="The value is 42. [code.py:1]")
 
         output = []
         with patch.object(self.ws, "read", wraps=self.ws.read) as read:
@@ -83,7 +83,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(read.call_count, 1)
         self.assertEqual(calls[-1][1]["properties"]["action"]["enum"], ["finish"])
         self.assertTrue(any("read code.py:" in line for line in output))
-        self.assertIn("The value is 42.", output)
+        self.assertIn("The value is 42. [code.py:1]", output)
 
     def test_model_ignoring_loop_recovery_stops_without_repeating_tools(self):
         class Model:
@@ -113,7 +113,7 @@ class GraphTests(unittest.TestCase):
                     return action("search", content="FastAPI(")
                 if len(captured) == 2:
                     return action("read", "service_b/main.py")
-                return dict(action="finish", path="service_b/main.py", content="Both services expose apps.",
+                return dict(action="finish", path="service_b/main.py", content="Both services expose apps. [service_a/main.py:1] [service_b/main.py:1]",
                             message="Both services expose apps with constructors.")
         output = []
         result = run(Model(), self.ws, "Find all entry points", max_steps=3, output=output.append)
@@ -149,7 +149,7 @@ class GraphTests(unittest.TestCase):
             def chat(self, messages, schema):
                 calls.append((messages, schema))
                 if schema["properties"]["action"]["enum"] == ["finish"]:
-                    return action("finish", content="Entry points include first.py and second.py.")
+                    return action("finish", content="Entry points include first.py and second.py. [first.py:1] [second.py:1]")
                 if len(calls) == 1:
                     return action("search", content="FastAPI(")
                 return action("read", ("first.py", "second.py", "third.py")[len(calls)-2])
@@ -161,7 +161,7 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
         self.assertEqual(calls[-1][1]["properties"]["action"]["enum"], ["finish"])
         self.assertIn("no tool calls remain", calls[-1][0][-1]["content"])
-        self.assertIn("Entry points include first.py and second.py.", output)
+        self.assertIn("Entry points include first.py and second.py. [first.py:1] [second.py:1]", output)
 
     @patch.dict("os.environ", {"LANGSMITH_TRACING": "true", "LANGCHAIN_TRACING_V2": "true"})
     def test_parent_tracing_is_disabled_for_model_execution(self):
