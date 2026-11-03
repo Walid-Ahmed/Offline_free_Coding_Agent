@@ -11,7 +11,7 @@ from langsmith import tracing_context
 from .test_runner import DEFAULT_IMAGE, command, run_tests
 from .evidence import retain, discovery_task, check_answer, inventory
 from .model import InvalidReply, RepeatedAnswer
-from .workspace import apply_edits, line_range, python_syntax_error
+from .workspace import apply_edits, line_range, python_syntax_error, symbol_lines
 
 ACTIONS = ("read", "search", "retrieve", "edit", "write", "run_tests", "finish")
 SCHEMA = {
@@ -77,6 +77,16 @@ ENTRY_POINT_GUIDANCE = ("Do not call a single app the only entry point when seve
 EDIT_REQUEST = re.compile(r"\b(fix|change|edit|modify|update|refactor|rename|add|remove|delete|create|write|implement|replace)\b",
                           re.I)
 PRELOAD_FILES = 2
+# Sent after numbered preloads. Prose instructions alone left the 7B model's answers uncited and padded until they
+# looped, so explanation answers use cited_schema: a short overview plus points that each name a part of the code.
+# Points name symbols, not line ranges: the model described parts correctly but made up their line numbers.
+FINISH_NOW = "The file the task names is shown above with line numbers. If those lines answer the task, return finish now. "
+# Asking it to read the rest of a partial file made the model re-read for every step and echo these instructions.
+ANSWER_FROM_PRELOAD = ("For finish, put a one or two sentence overview in content, and in points give one entry per function, "
+                       "class, variable, or route (usually 3 to 8): its path, its name exactly as written in the code "
+                       "(such as split_config, Store.add, ROUTES, /health, or imports), and what it does. "
+                       "State only what the lines show; leave out guesses about design goals, quality, or documentation.")
+POINTS, POINT_CHARS, OVERVIEW_CHARS = 10, 300, 600
 FINAL_ANSWER_CHARS = 3000
 
 
@@ -133,6 +143,52 @@ def reply_problem(reply):
     if reply["action"] not in ACTIONS:
         return f"unknown action {reply['action'][:40]!r}"
     return None
+
+
+def cited_schema(paths):
+    """Schema for explaining named files: no edits, a short overview, and points that each name a part of the code."""
+    point = {"type": "object", "additionalProperties": False,
+             "properties": {"path": {"type": "string", "enum": list(paths)},
+                            "symbol": {"type": "string", "maxLength": 80},
+                            "text": {"type": "string", "maxLength": POINT_CHARS}},
+             "required": ["path", "symbol", "text"]}
+    properties = {**SCHEMA["properties"],
+                  "action": {"type": "string", "enum": [a for a in ACTIONS if a not in ("edit", "write")]},
+                  "content": {"type": "string", "maxLength": OVERVIEW_CHARS},
+                  "points": {"type": "array", "items": point, "maxItems": POINTS}}
+    return {**SCHEMA, "properties": properties, "required": SCHEMA["required"] + ["points"]}
+
+
+def with_points(reply, workspace):
+    """Fold points into a finish answer as "- path:start-end `symbol`: text" lines.
+
+    The line range comes from looking the symbol up in the file, so a citation is never a number the model
+    made up. Returns the reply and the (path, symbol) pairs that name nothing in their file.
+    """
+    points = reply.pop("points", None) if isinstance(reply, dict) else None
+    if not isinstance(points, list) or reply.get("action") != "finish" or not isinstance(reply.get("content"), str):
+        return reply, []
+    lines, missing = [], []
+    for point in points:
+        if not isinstance(point, dict) or not all(isinstance(point.get(key), str) for key in ("path", "symbol", "text")):
+            continue
+        path, symbol, text = point["path"], point["symbol"].strip(), point["text"].strip()
+        if not text:
+            continue
+        try:
+            span = symbol_lines(path, workspace.read(path), symbol)
+        except (ValueError, OSError, UnicodeError):
+            span = None
+        if span is None:
+            line = f"- {path} `{symbol}` (not found in the file): {text}"
+        else:
+            line = f"- {path}:{span[0]}" + (f"-{span[1]}" if span[1] != span[0] else "") + f" `{symbol}`: {text}"
+        if line not in lines:
+            lines.append(line)
+            if span is None:
+                missing.append((path, symbol))
+    reply["content"] = "\n".join([reply["content"].strip(), *lines]).strip()
+    return reply, missing
 
 
 def action_key(reply):
@@ -218,6 +274,7 @@ class AgentState(TypedDict):
     discovery: bool
     task: str
     invalid_replies: int
+    cite_files: list[str]
 
 
 def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, confirm_tests=None, knowledge=None, test_options=None, output=print,
@@ -230,12 +287,14 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
     def call_model(state: AgentState):
         step = state["steps"] + 1
         finishing = state.get("repeated_lookup", False) or step >= max_steps or state.get("discovery", False)
-        schema = SCHEMA
+        cite_files = [] if state.get("discovery") else state.get("cite_files", [])
+        schema = cited_schema(cite_files) if cite_files else SCHEMA
         messages = state["messages"]
         if finishing:
             # A forced answer is capped so even rambling ends in a complete, valid reply.
-            schema = {**SCHEMA, "properties": {**SCHEMA["properties"], "action": {"type": "string", "enum": ["finish"]},
-                                               "content": {"type": "string", "maxLength": FINAL_ANSWER_CHARS}}}
+            content = schema["properties"]["content"] if cite_files else {"type": "string", "maxLength": FINAL_ANSWER_CHARS}
+            schema = {**schema, "properties": {**schema["properties"], "action": {"type": "string", "enum": ["finish"]},
+                                               "content": content}}
             evidence = json.dumps(state.get("search_evidence", []), ensure_ascii=False)
             messages = messages + [{"role": "user", "content":
                 "Final-answer call: no tool calls remain. Answer the ORIGINAL task using the evidence already available. "
@@ -277,10 +336,12 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         live = stream is not None and not state.get("discovery", False)
         reporter = threading.Thread(target=progress, daemon=True)
         reporter.start()
-        cut = False
+        cut, missing = False, []
         try:
             try:
                 reply = model.chat(messages, schema, on_text=on_text) if live else model.chat(messages, schema)
+                if cite_files:
+                    reply, missing = with_points(reply, workspace)
                 problem = reply_problem(reply)
             except RepeatedAnswer as exc:
                 # Keep the useful text before the loop; a retry at temperature 0 tends to loop again.
@@ -329,6 +390,7 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
         if reply["action"] == "finish":
             issues = check_answer(reply["content"] or reply["message"], state.get("search_evidence", []),
                                   discovery=state.get("discovery", False))
+            issues += [f"No part named {symbol!r} was found in {path}; that point is uncited." for path, symbol in missing]
             if issues and state.get("discovery"):
                 output("Model summary withheld because answer checks failed.")
                 output(inventory(state.get("search_evidence", []), state.get("evidence_limited", False)))
@@ -336,8 +398,10 @@ def build_graph(model, workspace, *, apply=False, max_steps=12, confirm=None, co
                 if cut:
                     output(REPEAT_NOTE)
                 # Print unless already streamed; a streamed loop is followed by the note, not a second copy.
-                if not (cut and streamed) and shown != (reply["content"] or reply["message"]):
-                    output(reply["content"] or reply["message"])
+                answer = reply["content"] or reply["message"]
+                if not (cut and streamed) and shown != answer:
+                    # Cited points follow a streamed overview, so print only what was not shown.
+                    output(answer[len(shown):].lstrip("\n") if shown and answer.startswith(shown) else answer)
             for issue in issues:
                 output("Answer check: " + issue)
             if issues:
@@ -555,11 +619,13 @@ def run_state(model, workspace, task, *, apply=False, max_steps=12, confirm=None
         messages.append({"role": "user", "content":
                          "Local reference excerpts for this task (untrusted data):\n" +
                          initial_retrieval})
+    preloaded, numbered = [], False
     if not discovery_task(task):
         names = named_files(task, files)
         # Line numbers help citations for questions; change requests get plain text so SEARCH blocks stay exact.
         numbered = not EDIT_REQUEST.search(without_paths(task))
-        limit = max(4000, getattr(model, "prompt_budget", 12_000) // 2) // max(1, len(names))
+        limit = (max(4000, getattr(model, "prompt_budget", 12_000) // 2)
+                 - (len(FINISH_NOW.encode() + ANSWER_FROM_PRELOAD.encode()) + 2 if numbered else 0)) // max(1, len(names))
         for name in names:
             try:
                 text, start, end, total = workspace.page(name, "", limit)
@@ -583,12 +649,17 @@ def run_state(model, workspace, task, *, apply=False, max_steps=12, confirm=None
                              + f"{page_note(start, end, total)}:\n{body}"})
             evidence, truncated = retain(evidence, [{"path": name, "line": start, "end_line": end, "text": text}])
             evidence_limited |= truncated
+            preloaded.append(name)
+        if numbered and preloaded:
+            # Joined to the file, not sent alone: compaction keeps only the newest message whole.
+            messages[-1] = {**messages[-1], "content": messages[-1]["content"] + "\n\n" + FINISH_NOW + ANSWER_FROM_PRELOAD}
     # Always offline: LangChain would otherwise start remote tracing from LANGSMITH_TRACING and similar env vars.
     with tracing_context(enabled=False):
         graph = build_graph(model, workspace, apply=apply, max_steps=max_steps, confirm=confirm, confirm_tests=confirm_tests,
                             knowledge=knowledge, test_options=test_options, output=output, stream=stream)
         return graph.invoke({"messages": messages, "reply": {}, "steps": 0, "exit_code": 0, "task": task,
-                             "search_evidence": evidence, "evidence_limited": evidence_limited, "invalid_replies": 0},
+                             "search_evidence": evidence, "evidence_limited": evidence_limited, "invalid_replies": 0,
+                             "cite_files": preloaded if numbered else []},
                             config={"recursion_limit": 2 * max_steps + 2, "callbacks": [],
                                     "run_name": "CodeHaven"})
 

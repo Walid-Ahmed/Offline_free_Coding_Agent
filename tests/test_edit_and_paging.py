@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from offline_agent.agent import action_key, run
-from offline_agent.workspace import Workspace, apply_edits, line_range
+from offline_agent.workspace import Workspace, apply_edits, line_range, symbol_lines
 
 
 def action(kind, path="", content="", message="Working"):
@@ -140,3 +140,27 @@ class AgentToolTests(unittest.TestCase):
         self.assertRegex(first_page, r"Lines 1-\d+ of 1000; \d+ more lines, request content \"\d+-\d+\"")
         self.assertLess(len(first_page.encode()), 6500)
         self.assertIn("Lines 990-1000 of 1000:\nvalue_990 = 990", model.calls[2][-1]["content"])
+
+
+class SymbolLineTests(unittest.TestCase):
+    SOURCE = ("import os\nfrom pathlib import Path\n\nROUTES = {\n    'a': 1,\n}\n\n\n"
+              "class Store:\n    def add(self):\n        pass\n\n    @property\n    def low(self):\n        return 1\n\n\n"
+              "@app.get('/health')\nasync def health():\n    return {}\n")
+
+    def test_python_parts_resolve_to_their_full_ranges(self):
+        cases = {"imports": (1, 2), "ROUTES": (4, 6), "Store": (9, 15), "Store.low": (13, 15), "low": (13, 15),
+                 "def add": (10, 11), "`health()`": (18, 20), "/health": (18, 20)}
+        for symbol, expected in cases.items():
+            with self.subTest(symbol=symbol):
+                self.assertEqual(symbol_lines("store.py", self.SOURCE, symbol), expected)
+
+    def test_unknown_names_resolve_to_nothing(self):
+        for symbol in ("main", "Other.low", "/missing", "", "os.path"):
+            with self.subTest(symbol=symbol):
+                self.assertIsNone(symbol_lines("store.py", self.SOURCE, symbol))
+
+    def test_other_files_match_the_first_line_naming_the_part(self):
+        script = "const total = 1;\nfunction subtotal() {}\nfunction total_tax() { return total; }\n"
+        self.assertEqual(symbol_lines("cart.js", script, "total"), (1, 1))
+        self.assertEqual(symbol_lines("cart.js", script, "subtotal()"), (2, 2))
+        self.assertEqual(symbol_lines("broken.py", "def go(:\n    pass\n", "go"), (1, 1))  # Unparsable: text match.

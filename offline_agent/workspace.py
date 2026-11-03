@@ -24,6 +24,50 @@ def line_range(spec):
     return start, end
 
 
+def symbol_lines(name, text, symbol):
+    """Line range (start, end) of a named part of a file, or None when nothing by that name is defined.
+
+    Python files are parsed, never executed: a function or class (decorators included, Class.method for
+    methods), a module-level variable, a route path such as /health, or "imports". Other files match the
+    first line that defines or mentions the name.
+    """
+    symbol = re.sub(r"^(?:async\s+def|def|class)\s+", "", symbol.strip().strip("`'\" ")).removesuffix("()").strip()
+    if not symbol:
+        return None
+    if Path(name).suffix in (".py", ".pyi"):
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            tree = None
+        if tree is not None:
+            return python_symbol(tree, text, symbol)
+    pattern = re.compile(rf"(?<![\w.]){re.escape(symbol)}(?![\w])")
+    for number, line in enumerate(text.splitlines(), 1):
+        if pattern.search(line):
+            return number, number
+    return None
+
+
+def python_symbol(tree, text, symbol):
+    if symbol.lower() == "imports":
+        imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        return (imports[0].lineno, imports[-1].end_lineno) if imports else None
+    owner, _, member = symbol.rpartition(".")
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    scopes = ([c.body for c in classes if c.name == owner] if owner else [tree.body] + [c.body for c in classes])
+    route = re.compile(rf"[\"']{re.escape(symbol)}[\"']") if symbol.startswith("/") else None
+    for node in (node for body in scopes for node in body):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            decorators = [ast.get_source_segment(text, d) or "" for d in node.decorator_list]
+            if node.name == member or (route and any(route.search(d) for d in decorators)):
+                return min([node.lineno] + [d.lineno for d in node.decorator_list]), node.end_lineno
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id == member for t in targets):
+                return node.lineno, node.end_lineno
+    return None
+
+
 def python_syntax_error(name, content, before=None):
     """Describe a syntax error a change introduces into a Python file. Parses only; never executes."""
     if Path(name).suffix not in (".py", ".pyi"):

@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from offline_agent.agent import FINAL_ANSWER_CHARS, REPEAT_NOTE, Session, run
+from offline_agent.agent import ANSWER_FROM_PRELOAD, FINAL_ANSWER_CHARS, FINISH_NOW, REPEAT_NOTE, Session, run
 from offline_agent.cli import interactive, main, write_stream
 from offline_agent.model import (MODEL, FinishContent, InvalidReply, Ollama, RepeatedAnswer, RepetitionGuard,
                                  compact_messages)
@@ -303,8 +303,61 @@ class PreloadTests(TempWorkspace):
         self.assertEqual(status, 0)  # The citation is verified against preloaded evidence.
         preload = model.calls[0][-1]["content"]
         self.assertTrue(preload.startswith("Tool result for read chapter-06/gateway/app/main.py (untrusted file data, preloaded"))
+        self.assertTrue(preload.endswith("\n\n" + FINISH_NOW + ANSWER_FROM_PRELOAD))  # Asks for cited, factual answers.
         self.assertIn("Lines 1-3 of 3:\n   1| from fastapi import FastAPI\n   2| \n   3| app = FastAPI(title='gateway')", preload)
         self.assertIn("Preloaded chapter-06/gateway/app/main.py (lines 1-3 of 3) because the task names it.", output)
+
+    def test_explanations_of_named_files_cite_points_by_symbol(self):
+        self.put("gateway/main.py", "from fastapi import FastAPI\n\napp = FastAPI(title='gateway')\n\n\n"
+                                    "@app.get('/health')\nasync def health():\n    return {'status': 'ok'}\n")
+        schemas = []
+        reply = dict(action("finish", content="Creates the gateway app."),
+                     points=[{"path": "gateway/main.py", "symbol": "imports", "text": "Imports FastAPI."},
+                             {"path": "gateway/main.py", "symbol": "app", "text": "Creates the app."},
+                             {"path": "gateway/main.py", "symbol": "app", "text": "Creates the app."},
+                             {"path": "gateway/main.py", "symbol": "/health", "text": "Reports that the gateway is up."}])
+
+        class Model:
+            def chat(self, messages, schema, on_text=None):
+                schemas.append(schema)
+                on_text("Creates the gateway app.")
+                return dict(reply)
+        output, streamed = [], []
+        status = run(Model(), self.ws, "explain gateway/main.py", output=output.append, stream=streamed.append)
+        self.assertEqual(status, 0)  # Looked-up ranges are citations that the answer check verifies.
+        points = schemas[0]["properties"]["points"]
+        self.assertIn("points", schemas[0]["required"])
+        self.assertEqual(points["items"]["properties"]["path"]["enum"], ["gateway/main.py"])
+        self.assertNotIn("edit", schemas[0]["properties"]["action"]["enum"])
+        # The streamed overview is not printed again; points follow it once each, with real line ranges.
+        self.assertIn("- gateway/main.py:1 `imports`: Imports FastAPI.\n- gateway/main.py:3 `app`: Creates the app.\n"
+                      "- gateway/main.py:6-8 `/health`: Reports that the gateway is up.", output)
+        self.assertEqual(sum("Creates the app." in line for line in output), 1)
+
+    def test_points_naming_unknown_or_unseen_parts_are_flagged(self):
+        self.put("gateway/main.py", "".join(f"value_{n} = {n}\n" for n in range(1, 1001)))
+        model = ScriptedModel([dict(action("finish", content="Sets values."),
+                                    points=[{"path": "gateway/main.py", "symbol": "main", "text": "Starts a server."},
+                                            {"path": "gateway/main.py", "symbol": "value_900", "text": "Sets 900."}])])
+        output = []
+        self.assertEqual(run(model, self.ws, "explain gateway/main.py", output=output.append), 2)
+        self.assertIn("- gateway/main.py `main` (not found in the file): Starts a server.", "\n".join(output))
+        self.assertIn("Answer check: No part named 'main' was found in gateway/main.py; that point is uncited.", output)
+        # value_900 exists but lies past the preloaded lines, so the model never saw it.
+        self.assertIn("Answer check: Citation not supported by retained evidence: gateway/main.py:900-900.", output)
+
+    def test_preloaded_file_survives_compaction_beside_large_retrieval(self):
+        from offline_agent.model import compact_messages
+        self.put("big.py", "".join(f"value_{n} = {n}\n" for n in range(1, 1001)))
+
+        class Knowledge:
+            def retrieve(self, _query):
+                return json.dumps({"results": [{"source": "notes.md", "start_line": 1, "end_line": 1, "text": "x" * 5000}]})
+        model = ScriptedModel([action("finish", content="Done.")])
+        run(model, self.ws, "explain big.py", knowledge=Knowledge(), output=lambda _: None)
+        sent = json.dumps(compact_messages(model.calls[0], 12_000))
+        self.assertIn("value_100 = 100", sent)
+        self.assertIn(ANSWER_FROM_PRELOAD, sent)
 
     def test_change_requests_preload_plain_text_for_exact_search_blocks(self):
         self.put("calc.py", "def add(a, b):\n    return a + b\n")
@@ -313,6 +366,7 @@ class PreloadTests(TempWorkspace):
         preload = model.calls[0][-1]["content"]
         self.assertIn("Lines 1-2 of 2:\ndef add(a, b):\n    return a + b\n", preload)
         self.assertNotIn("1| ", preload)
+        self.assertNotIn(ANSWER_FROM_PRELOAD, json.dumps(model.calls[0]))
 
     def test_unique_file_names_resolve_and_ambiguous_missing_or_hidden_ones_do_not(self):
         from offline_agent.agent import named_files
